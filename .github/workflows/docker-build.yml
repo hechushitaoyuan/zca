@@ -1,0 +1,40 @@
+name: docker-build
+
+# 仅在每次 push / PR 时构建 Docker 镜像以验证 Dockerfile 可用，
+# 不登录、不推送到 Docker Hub 或任何镜像仓库。
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "Dockerfile"
+      - ".dockerignore"
+      - "requirements.txt"
+      - "captcha_node/**"
+      - "app/**"
+      - "main.py"
+      - ".github/workflows/docker-build.yml"
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build image (no push)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image (validate only, no registry push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false          # 关键：不推送到任何仓库（含 Docker Hub）
+          load: true           # 构建到本地以便后续可选验证
+          tags: zcode2api:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
