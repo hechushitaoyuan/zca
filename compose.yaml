@@ -6,9 +6,10 @@ services:
     container_name: zca
     ports:
       # 实验部署占用 8047，绝不触碰既有 8046 服务。
-      # 仅绑定回环：实验服务不直接暴露到公网；本机 Cloudflare Tunnel / SSH 验证不受影响。
-      # 若甲方明确要公网直连，再单独放开并先配置网关鉴权。
-      - "127.0.0.1:8047:3000"
+      # 监听地址可配：默认 127.0.0.1（仅本机，安全默认，Tunnel/SSH 验证不受影响）。
+      # 公网直连需在 .env 设 ZCA_BIND_IP=0.0.0.0，且必须先配置非空强
+      # ZCODE_ADMIN_KEY 与 ZCODE_GATEWAY_KEY 并确认云防火墙范围（见 docs/DEPLOYMENT.md）。
+      - "${ZCA_BIND_IP:-127.0.0.1}:8047:3000"
     volumes:
       - ./data:/data
     env_file:

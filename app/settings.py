@@ -45,6 +45,11 @@ HOST = os.getenv("ZCODE_HOST", "0.0.0.0")
 # 后台管理密码默认值，首次启动写入 data/accounts.db，之后以数据库（meta 表）为准。
 DEFAULT_ADMIN_KEY = os.getenv("ZCODE_ADMIN_KEY", "zcode")
 
+# 网关 API Key（调用 /v1/messages 等的鉴权）。默认空（仅回环安全使用）。
+# 仅用于「新库初始化」与「既有库当前为空时补齐」；绝不覆盖用户已在后台设置的非空值。
+# ⚠️ 公网监听（ZCA_BIND_IP=0.0.0.0）前必须设为强随机非空值。
+GATEWAY_KEY = (os.getenv("ZCODE_GATEWAY_KEY", "") or "").strip()
+
 # ── 验证码缓存 ───────────────────────────────────────────────────────────────
 CAPTCHA_CACHE_TTL = _int("CAPTCHA_CACHE_TTL", 45_000)          # ms
 CAPTCHA_CONFIG_CACHE_TTL = _int("CAPTCHA_CONFIG_CACHE_TTL", 600_000)  # ms

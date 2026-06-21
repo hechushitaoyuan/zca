@@ -317,7 +317,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 
 欢迎提交 **Issue** 反馈问题、提出需求,或直接发起 **Pull Request** 改进代码与文档:
 
-- **提问题 / 报 Bug**:在仓库 [Issues](https://github.com/yuanhhs/zcode2api/issues) 中描述复现步骤、
+- **提问题 / 报 Bug**：在仓库 [Issues](https://github.com/hechushitaoyuan/zca/issues) 中描述复现步骤、
   期望行为与实际行为(如涉及上游返回,请脱敏后附上结构,**切勿泄露你的 JWT / API Key**)。
 - **提交 PR**:Fork → 新建分支 → 提交(遵循 `feat:` / `fix:` / `docs:` 等约定式提交)→ 发起 PR 并说明动机与测试方式。
 - **改进方向举例**:额度字段的真实结构校正、上游模型动态拉取、更稳健的耗尽/限流判定、求解器健壮性、测试覆盖。
