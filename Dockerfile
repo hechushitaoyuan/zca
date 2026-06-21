@@ -31,8 +31,22 @@ RUN cd captcha_node && npm ci --omit=dev
 # ── 应用源码 ────────────────────────────────────────────────────────────────
 COPY . .
 
+# ── 构建标识（每次提交都变，置于末尾以免破坏上层 apt/pip/npm 缓存）───────────
+ARG ZCA_VERSION=dev
+ARG ZCA_COMMIT=unknown
+ENV ZCA_VERSION=${ZCA_VERSION} \
+    ZCA_COMMIT=${ZCA_COMMIT}
+LABEL org.opencontainers.image.title="zca" \
+      org.opencontainers.image.version="${ZCA_VERSION}" \
+      org.opencontainers.image.revision="${ZCA_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/hechushitaoyuan/zca"
+
 # 账号 / 设置持久化目录（建议挂载到宿主机卷）
 VOLUME ["/data"]
 EXPOSE 3000
+
+# 健康检查：不依赖 curl（构建期已 purge），用镜像内 Python 探活 /health。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=3).status==200 else 1)"]
 
 CMD ["python", "main.py", "serve"]

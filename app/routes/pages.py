@@ -45,6 +45,20 @@ async def admin_settings():
     return _html("settings.html")
 
 
+@router.get("/health", include_in_schema=False)
+async def health():
+    """轻量健康检查：仅暴露存活与构建标识，绝不返回账号/配置/凭据。"""
+    return {
+        "status": "ok",
+        "version": settings.ZCA_VERSION,
+        "commit": settings.ZCA_COMMIT,
+    }
+
+
 @router.get("/meta", include_in_schema=False)
 async def meta():
-    return {"version": settings.APP_VERSION}
+    # 保留 version 键供后台 header.js 消费；新增 commit 标识构建来源。
+    return {
+        "version": settings.ZCA_VERSION,
+        "commit": settings.ZCA_COMMIT,
+    }

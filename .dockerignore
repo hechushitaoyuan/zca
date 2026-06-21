@@ -1,17 +1,33 @@
-# ── 版本控制 / 文档 ──
+# ── 版本控制 / 文档（不入镜像）──
 .git
 .gitignore
 .github
 docs
 *.md
 LICENSE
+IDE-LOG
 
-# ── 运行时数据与密钥（务必排除，避免泄露/写入镜像）──
+# ── 密钥 / 凭据（务必排除，绝不写入镜像）──
+github-Secrets.txt
+LOCAL-TOKENS.md
+.env
+.env.*
+*.env
+secrets
+*.key
+*.pem
+credentials.json
+
+# ── 账号导入导出 / 运行时数据与数据库 ──
+*.zcas.json
+zcode-accounts.json
+zcode_oauth_result.json
 data
 data_test
-.env
-*.env
-zcode_oauth_result.json
+logs
+*.db
+*.sqlite
+*.sqlite3
 
 # ── 依赖与缓存（镜像内重新安装）──
 captcha_node/node_modules

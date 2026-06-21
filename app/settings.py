@@ -91,3 +91,9 @@ ZCODE_BILLING_BASE = "https://zcode.z.ai/api/v1/zcode-plan"
 
 USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", f"ZCode/{ZCODE_CLIENT_VERSION}")
 APP_VERSION = "2.0.0"
+
+# ── 构建标识（由镜像 build args 注入，运行时只读）──────────────────────────────
+# 镜像构建时通过 --build-arg ZCA_VERSION=... ZCA_COMMIT=... 注入并写入环境变量；
+# 本地直接运行时回退到默认值，便于 /health 与 /meta 区分构建来源。
+ZCA_VERSION = (os.getenv("ZCA_VERSION", "") or APP_VERSION).strip()
+ZCA_COMMIT = (os.getenv("ZCA_COMMIT", "") or "unknown").strip()

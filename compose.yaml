@@ -1,0 +1,29 @@
+# VPS / 生产示例：使用预构建镜像部署，不在 VPS 上 build。
+# 用法见 docs/DEPLOYMENT.md。所有敏感值经 .env 注入，本文件不含任何密码 / token。
+services:
+  zca:
+    image: ${ZCA_IMAGE:?set ZCA_IMAGE in .env, e.g. your-dockerhub-user/zca:latest}
+    container_name: zca
+    ports:
+      # 实验部署占用 8047，绝不触碰既有 8046 服务。
+      # 仅绑定回环：实验服务不直接暴露到公网；本机 Cloudflare Tunnel / SSH 验证不受影响。
+      # 若甲方明确要公网直连，再单独放开并先配置网关鉴权。
+      - "127.0.0.1:8047:3000"
+    volumes:
+      - ./data:/data
+    env_file:
+      - .env
+    environment:
+      ZCODE_PORT: "3000"
+      ZCODE_HOST: "0.0.0.0"
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:3000/health', timeout=3).status==200 else 1)"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

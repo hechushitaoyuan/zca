@@ -40,20 +40,27 @@ docker run -d --name zcode2api \
 - 环境变量同下方「环境变量」表,可在 `docker-compose.yml` 的 `environment` 下覆盖。
 - **请勿**将 `.env`、`data/` 打入镜像——已在 `.dockerignore` 中排除。
 
-### 自动构建镜像(GHCR)
+### 自动构建镜像（Docker Hub 多架构）
 
-`.github/workflows/docker-build.yml` 会在**每次更新**(push 到 `master` 或打 `v*` tag)时
-**自动构建并发布镜像到 GHCR(GitHub 容器仓库,`ghcr.io`)**,使用内置 `GITHUB_TOKEN`,
-**不使用 Docker Hub**;Pull Request 仅构建验证、不推送。
+`.github/workflows/docker-build.yml` 在 push 到 `main`、打 `v*` tag 或手动触发时，
+先跑 E2 测试（`compileall` + `unittest` + `node --check`），全绿后构建
+**`linux/amd64` + `linux/arm64`** 多架构镜像并推送到 **Docker Hub**（镜像名 `<用户名>/zca`）。
+Pull Request 仅测试 + 构建验证、**不推送**。
+
+- 登录凭据仅来自仓库 Secrets：`DOCKERHUB_USERNAME`、`DOCKERHUB_TOKEN`，不写入仓库文件。
+- 标签：默认分支 `latest`、短 SHA、`v*` tag。
 
 ```bash
 # 拉取并运行已发布镜像（tag: latest 或 sha-xxxxxxx）
-docker run -d --name zcode2api -p 3000:3000 \
-  -v "$(pwd)/data:/data" -e ZCODE_ADMIN_KEY=zcode \
-  ghcr.io/yuanhhs/zcode2api:latest
+docker run -d --name zca -p 8047:3000 \
+  -v "$(pwd)/data:/data" -e ZCODE_ADMIN_KEY=<强密码> \
+  <你的 Docker Hub 用户名>/zca:latest
 ```
 
-> 首次发布后,GHCR 上的包默认可能为私有;如需公开拉取,请到仓库 **Packages → 该包 → Package settings → Change visibility** 设为 Public。
+### VPS 部署（/opt/zca，实验端口 8047）
+
+使用预构建镜像 + `compose.yaml` 部署到 VPS 实验端口 8047（与既有 8046 服务并存，互不影响）。
+完整步骤、健康检查、版本固定与回滚见 **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**。
 
 ## 后台 UI
 
