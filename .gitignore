@@ -25,6 +25,7 @@ accounts.export.json
 
 # Runtime state
 data/
+data_test/
 logs/
 *.log
 *.db
@@ -50,6 +51,7 @@ venv/
 
 # Node
 node_modules/
+js-code/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -59,4 +61,3 @@ yarn-error.log*
 .vscode/
 .DS_Store
 Thumbs.db
-
