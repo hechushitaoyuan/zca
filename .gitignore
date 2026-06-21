@@ -1,0 +1,65 @@
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+config.yaml
+config.yml
+credentials.json
+
+# Secrets and authentication material
+*.key
+*.pem
+*.p12
+*.pfx
+*.token
+*.tokens
+secrets/
+tokens/
+token.txt
+auth.json
+LOCAL-TOKENS.md
+github-Secrets.txt
+
+# ZCode account imports and exports
+*.zcas.json
+zcode-accounts.json
+accounts.export.json
+
+# Runtime state
+data/
+data_test/
+logs/
+*.log
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+cache/
+.cache/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node
+node_modules/
+js-code/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
