@@ -70,9 +70,18 @@ class Store:
                 f"INSERT OR IGNORE INTO {_META} (key, value) VALUES ('admin_key', ?)",
                 (settings.DEFAULT_ADMIN_KEY,),
             )
+            # 网关 Key：新库用环境值（未配置则空）初始化。
             conn.execute(
-                f"INSERT OR IGNORE INTO {_META} (key, value) VALUES ('gateway_key', '')"
+                f"INSERT OR IGNORE INTO {_META} (key, value) VALUES ('gateway_key', ?)",
+                (settings.GATEWAY_KEY,),
             )
+            # 既有库：仅当当前值为空且环境值非空时补齐；WHERE value='' 确保
+            # 绝不覆盖用户已在后台设置的非空网关 Key。环境值为空则整段跳过。
+            if settings.GATEWAY_KEY:
+                conn.execute(
+                    f"UPDATE {_META} SET value = ? WHERE key = 'gateway_key' AND value = ''",
+                    (settings.GATEWAY_KEY,),
+                )
             conn.execute(
                 f"INSERT OR IGNORE INTO {_META} (key, value) VALUES ('quota_refresh_interval', ?)",
                 (str(settings.QUOTA_REFRESH_INTERVAL),),

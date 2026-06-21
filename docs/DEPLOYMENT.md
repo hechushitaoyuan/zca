@@ -56,12 +56,41 @@ curl -fsS http://127.0.0.1:8047/health
 docker compose logs --tail=100 zca
 ```
 
-> 端口绑定为 `127.0.0.1:8047`，**仅本机可访问**，实验服务不直接暴露到公网。
-> 本机 Cloudflare Tunnel / SSH 转发验证不受影响。若甲方明确要求公网直连，
-> 再单独把绑定放开为 `8047:3000`，且必须先在「设置」配置网关 API Key 鉴权。
+> 默认端口绑定为 `127.0.0.1:8047`（由 `.env` 的 `ZCA_BIND_IP`，缺省 `127.0.0.1`），
+> **仅本机可访问**，实验服务不直接暴露到公网。本机 Cloudflare Tunnel / SSH 转发验证不受影响。
 
 日志脱敏检查：确认日志中 **不出现** 完整 JWT、API Key、verifyParam、后台密码等敏感串。
 `/health` 与 `/meta` 仅返回 `status/version/commit`，不含账号、配置或凭据。
+
+## 3.1 公网直连（可选，需先满足安全前置）
+
+仅当甲方明确要求通过公网 IP（如 `http://<公网IP>:8047/admin`）访问时，才放开监听地址。
+
+**放开前必须全部满足：**
+
+1. `.env` 设置 **非空强** `ZCODE_ADMIN_KEY`（后台登录），切勿沿用默认 `zcode`。
+2. `.env` 设置 **非空强随机** `ZCODE_GATEWAY_KEY`（`/v1/messages` 鉴权）。
+   - 新库会用该值初始化；既有库若当前为空会被补齐；**已在后台设置的非空值不会被覆盖**。
+   - 若数据库网关 Key 仍为空就公网放开，等于网关无鉴权，属高风险。
+3. 确认云厂商安全组 / 防火墙 **仅放行预期来源** 到 8047，且 **未误开** 8046 等其他端口。
+
+满足后再设置：
+
+```ini
+# .env
+ZCA_BIND_IP=0.0.0.0
+ZCODE_ADMIN_KEY=<强密码>
+ZCODE_GATEWAY_KEY=<强随机值>
+```
+
+```bash
+docker compose up -d   # 重新应用端口绑定
+# 本机自检（不经公网）
+curl -fsS http://127.0.0.1:8047/health
+```
+
+> 回退到仅本机：把 `ZCA_BIND_IP` 改回 `127.0.0.1`（或删除该行）后 `docker compose up -d`。
+> 切勿在日志、报告或提交中回显真实 `ZCODE_ADMIN_KEY` / `ZCODE_GATEWAY_KEY`。
 
 ## 4. 版本固定与回滚
 
