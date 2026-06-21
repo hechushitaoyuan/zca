@@ -18,13 +18,15 @@ from .. import logs, settings
 from ..agent import build_request
 from ..auth_admin import verify_gateway_key
 from ..captcha import captcha_manager
-from ..models import Account, Status
+from ..models import Account, FailureKind, Status
 from ..quota import fetch_quota
 from ..store import store
+from ..upstream_errors import classify_upstream_failure
 
 router = APIRouter()
 
-MAX_CAPTCHA_RETRIES = 3
+# Initial attempt plus one narrowly-scoped captcha retry.
+MAX_CAPTCHA_RETRIES = 2
 MAX_ACCOUNT_ATTEMPTS = 5
 
 # Z.AI 上游模型名大小写敏感
@@ -38,10 +40,6 @@ MODEL_NAME_MAP = {
 
 # /v1/models 对外公布的可用模型
 AVAILABLE_MODELS = ["GLM-5.2", "GLM-5-Turbo"]
-
-# 命中以下信号则认为账号额度用完
-_EXHAUST_KEYWORDS = ("quota", "insufficient", "balance", "exhaust", "额度", "余额不足")
-
 
 def _detect_provider(body: dict, headers) -> str:
     model = body.get("model") or ""
@@ -68,26 +66,6 @@ def _normalize_body(body: dict) -> dict:
                 bridged.append(msg)
         body["messages"] = bridged
     return body
-
-
-def _is_captcha_error(text: str) -> bool:
-    low = text.lower()
-    return "captcha" in low or "verify token" in low or "verify failed" in low
-
-
-def _is_exhausted(status_code: int, text: str) -> bool:
-    if status_code in (402,):
-        return True
-    low = text.lower()
-    return any(k in low for k in _EXHAUST_KEYWORDS)
-
-
-def _mark(account: Account, status_value: str, error: str | None = None) -> None:
-    account.status = status_value
-    account.last_error = error
-    if status_value == Status.COOLING:
-        account.cooling_until = time.time() + settings.COOLING_SECONDS
-    store.update_account(account)
 
 
 def _last_user_text(body: dict) -> str:
@@ -128,8 +106,6 @@ async def messages(request: Request):
     body = _normalize_body(body)
     # 验证码页面由本服务托管，端口取实际请求端口（兼容任意启动端口）
     port = request.url.port or settings.PORT
-    payload = json.dumps(body).encode("utf-8")
-
     req_id = secrets.token_hex(3)
     logs.req(req_id, str(body.get("model") or "-"), bool(body.get("stream")), _last_user_text(body))
 
@@ -142,7 +118,7 @@ async def messages(request: Request):
         tried.add(account.id)
         needs_captcha = provider == "zai" and account.mode == "jwt"
 
-        result = await _try_account(req_id, account, body, payload, incoming_headers, port, needs_captcha)
+        result = await _try_account(req_id, account, body, incoming_headers, port, needs_captcha)
         if result is _NEXT_ACCOUNT:
             continue
         return result
@@ -157,102 +133,147 @@ async def messages(request: Request):
 _NEXT_ACCOUNT = object()
 
 
-async def _try_account(req_id, account, body, payload, incoming_headers, port, needs_captcha):
+async def _try_account(req_id, account, body, incoming_headers, port, needs_captcha):
     """尝试用单个账号转发，含验证码续期。返回 Response 或 _NEXT_ACCOUNT。"""
-    for attempt in range(MAX_CAPTCHA_RETRIES):
-        verify_param = None
-        if needs_captcha:
+    stream_owns_reservation = False
+    try:
+        for attempt in range(MAX_CAPTCHA_RETRIES):
+            verify_param = None
+            if needs_captcha:
+                try:
+                    verify_param = await captcha_manager.get_verify_param(port)
+                except Exception as err:  # noqa: BLE001
+                    logs.req_err(req_id, f"人机校验失败: {err}")
+                    return JSONResponse(
+                        {"error": {"message": "无法完成人机校验", "type": "captcha_error"}},
+                        status_code=503,
+                    )
+
             try:
-                verify_param = await captcha_manager.get_verify_param(port)
-            except Exception as err:  # noqa: BLE001
-                logs.req_err(req_id, f"人机校验失败: {err}")
-                return JSONResponse(
-                    {"error": {"message": f"无法完成人机校验: {err}", "type": "captcha_error"}},
-                    status_code=500,
+                url, headers, upstream_body = build_request(
+                    account, body, verify_param, incoming_headers
                 )
-
-        try:
-            url, headers = build_request(account, body, verify_param, incoming_headers)
-        except RuntimeError as err:
-            _mark(account, Status.INVALID, str(err))
-            logs.warn(req_id, f"账号 {account.name} 凭证无效，切换下一个")
-            return _NEXT_ACCOUNT
-
-        client = httpx.AsyncClient(timeout=httpx.Timeout(connect=30.0, read=None, write=120.0, pool=30.0))
-        cm = client.stream("POST", url, headers=headers, content=payload)
-        try:
-            resp = await cm.__aenter__()
-        except httpx.HTTPError as err:
-            await client.aclose()
-            _mark(account, Status.COOLING, f"连接失败: {err}")
-            logs.warn(req_id, f"账号 {account.name} 连接失败，切换下一个")
-            return _NEXT_ACCOUNT
-
-        status_code = resp.status_code
-
-        if status_code >= 400:
-            text = (await resp.aread()).decode("utf-8", "ignore")
-            await cm.__aexit__(None, None, None)
-            await client.aclose()
-
-            if status_code == 403 and _is_captcha_error(text) and needs_captcha:
-                captcha_manager.invalidate()
-                logs.warn(req_id, f"账号 {account.name} 验证码失效，刷新重试")
-                continue  # 同账号重试验证码
-
-            if _is_exhausted(status_code, text):
-                _mark(account, Status.EXHAUSTED, "额度已用完")
-                logs.warn(req_id, f"账号 {account.name} 额度用完，切换下一个")
-                asyncio.create_task(_safe_refresh(account))
+                payload = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
+            except RuntimeError as err:
+                account.mark_failure(FailureKind.AUTH, str(err), status=Status.INVALID)
+                store.update_account(account)
+                logs.warn(req_id, f"账号 {account.name} 凭证无效，切换下一个")
                 return _NEXT_ACCOUNT
 
-            if status_code in (401, 403):
-                _mark(account, Status.INVALID, f"鉴权失败 HTTP {status_code}")
-                logs.warn(req_id, f"账号 {account.name} 鉴权失败 {status_code}，切换下一个")
-                return _NEXT_ACCOUNT
-
-            if status_code == 429:
-                _mark(account, Status.COOLING, "上游限流 429")
-                logs.warn(req_id, f"账号 {account.name} 被限流 429，切换下一个")
-                return _NEXT_ACCOUNT
-
-            # 其它错误：直接回传客户端
-            account.fail_count += 1
-            store.update_account(account)
-            logs.req_err(req_id, f"上游错误 HTTP {status_code}（账号 {account.name}）")
-            return JSONResponse(
-                _safe_json(text) or {"error": {"message": text[:500], "type": "upstream_error"}},
-                status_code=status_code,
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=30.0, read=None, write=120.0, pool=30.0)
             )
-
-        # 成功：记录用量并流式透传
-        account.use_count += 1
-        account.last_used_at = time.time()
-        if account.status in (Status.COOLING, Status.EXHAUSTED):
-            account.status = Status.ACTIVE
-        store.update_account(account)
-        asyncio.create_task(_safe_refresh(account))
-
-        content_type = resp.headers.get("content-type", "application/json")
-
-        async def _body_iter():
+            cm = client.stream("POST", url, headers=headers, content=payload)
             try:
-                async for chunk in resp.aiter_bytes():
-                    yield chunk
-                logs.req_ok(req_id)
-            except Exception as err:  # noqa: BLE001
-                logs.req_err(req_id, f"流传输中断: {err}")
-            finally:
+                resp = await cm.__aenter__()
+            except httpx.HTTPError as err:
+                await client.aclose()
+                account.start_cooldown(
+                    kind=FailureKind.TRANSPORT,
+                    reason=f"连接失败: {err}",
+                    base_seconds=settings.COOLING_SECONDS,
+                    max_seconds=settings.COOLING_SECONDS,
+                )
+                store.update_account(account)
+                logs.warn(req_id, f"账号 {account.name} 连接失败，切换下一个")
+                return _NEXT_ACCOUNT
+
+            status_code = resp.status_code
+
+            # Only error responses are buffered for classification. Successful SSE is
+            # handed directly to StreamingResponse without clone/read/tee.
+            if status_code >= 400:
+                text = (await resp.aread()).decode("utf-8", "ignore")
                 await cm.__aexit__(None, None, None)
                 await client.aclose()
+                failure = classify_upstream_failure(status_code, text)
 
-        out_headers = {"Cache-Control": "no-cache"}
-        return StreamingResponse(_body_iter(), status_code=status_code,
-                                 media_type=content_type, headers=out_headers)
+                if failure == FailureKind.CAPTCHA and needs_captcha:
+                    if attempt + 1 < MAX_CAPTCHA_RETRIES:
+                        captcha_manager.invalidate()
+                        logs.warn(req_id, f"账号 {account.name} 验证码失效，仅重试一次")
+                        continue
+                    account.mark_failure(FailureKind.CAPTCHA, "验证码校验失败")
+                    store.update_account(account)
+                    logs.warn(req_id, f"账号 {account.name} 验证码重试失败，切换下一个")
+                    return _NEXT_ACCOUNT
 
-    # 验证码连续失败
-    logs.warn(req_id, f"账号 {account.name} 验证码连续失败，切换下一个")
-    return _NEXT_ACCOUNT
+                if failure == FailureKind.RISK_3012:
+                    delay = account.start_cooldown(
+                        kind=FailureKind.RISK_3012,
+                        reason="上游风控 3012",
+                        base_seconds=settings.RISK_3012_COOLDOWN_BASE,
+                        max_seconds=settings.RISK_3012_COOLDOWN_MAX,
+                    )
+                    store.update_account(account)
+                    logs.warn(req_id, f"账号 {account.name} 进入风控冷冻 {delay} 秒")
+                    return _NEXT_ACCOUNT
+
+                if failure == FailureKind.EXHAUSTED:
+                    account.mark_failure(FailureKind.EXHAUSTED, "额度已用完", status=Status.EXHAUSTED)
+                    store.update_account(account)
+                    logs.warn(req_id, f"账号 {account.name} 额度用完，切换下一个")
+                    asyncio.create_task(_safe_refresh(account))
+                    return _NEXT_ACCOUNT
+
+                if failure == FailureKind.AUTH:
+                    account.mark_failure(
+                        FailureKind.AUTH,
+                        f"鉴权失败 HTTP {status_code}",
+                        status=Status.INVALID,
+                    )
+                    store.update_account(account)
+                    logs.warn(req_id, f"账号 {account.name} 鉴权失败 {status_code}，切换下一个")
+                    return _NEXT_ACCOUNT
+
+                if failure == FailureKind.RATE_LIMIT:
+                    account.start_cooldown(
+                        kind=FailureKind.RATE_LIMIT,
+                        reason="上游限流 429",
+                        base_seconds=settings.COOLING_SECONDS,
+                        max_seconds=settings.COOLING_SECONDS,
+                    )
+                    store.update_account(account)
+                    logs.warn(req_id, f"账号 {account.name} 被限流 429，切换下一个")
+                    return _NEXT_ACCOUNT
+
+                account.mark_failure(FailureKind.UPSTREAM, f"上游错误 HTTP {status_code}")
+                store.update_account(account)
+                logs.req_err(req_id, f"上游错误 HTTP {status_code}（账号 {account.name}）")
+                return JSONResponse(
+                    _safe_json(text) or {"error": {"message": text[:500], "type": "upstream_error"}},
+                    status_code=status_code,
+                )
+
+            account.mark_success()
+            store.update_account(account)
+            asyncio.create_task(_safe_refresh(account))
+
+            content_type = resp.headers.get("content-type", "application/json")
+
+            async def _body_iter():
+                try:
+                    async for chunk in resp.aiter_bytes():
+                        yield chunk
+                    logs.req_ok(req_id)
+                except Exception as err:  # noqa: BLE001
+                    logs.req_err(req_id, f"流传输中断: {err}")
+                finally:
+                    await cm.__aexit__(None, None, None)
+                    await client.aclose()
+                    store.release(account)
+
+            out_headers = {"Cache-Control": "no-cache"}
+            stream_owns_reservation = True
+            return StreamingResponse(
+                _body_iter(), status_code=status_code, media_type=content_type, headers=out_headers
+            )
+
+        logs.warn(req_id, f"账号 {account.name} 验证码连续失败，切换下一个")
+        return _NEXT_ACCOUNT
+    finally:
+        if not stream_owns_reservation:
+            store.release(account)
 
 
 def _safe_json(text: str):

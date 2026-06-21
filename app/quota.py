@@ -99,11 +99,10 @@ async def fetch_quota(account: Account) -> dict:
         if remainings and all((r or 0) <= 0 for r in remainings):
             account.status = Status.EXHAUSTED
             account.last_error = "额度已用完"
-        elif account.status in (Status.EXHAUSTED, Status.COOLING, Status.INVALID):
-            # 额度恢复 → 重新激活
+        elif account.status in (Status.EXHAUSTED, Status.INVALID):
+            # 额度或鉴权恢复 → 重新激活。风控冷冻不能被额度刷新提前清除。
             account.status = Status.ACTIVE
             account.last_error = None
-            account.cooling_until = None
 
     store.update_account(account)
     return result or {"error": "无法获取额度数据"}

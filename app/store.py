@@ -17,6 +17,7 @@ from contextlib import closing
 
 from . import settings
 from .models import PROVIDERS, Account, Status
+from .scheduling import choose_account
 
 _TBL = "accounts"
 _META = "meta"
@@ -96,6 +97,7 @@ class Store:
                 except (json.JSONDecodeError, TypeError):
                     continue
                 if account.provider in self._accounts:
+                    account.concurrency_limit = settings.ACCOUNT_CONCURRENCY_LIMIT
                     self._accounts[account.provider].append(account)
 
     def _persist_account(self, account: Account) -> None:
@@ -184,6 +186,7 @@ class Store:
         if provider not in PROVIDERS:
             raise ValueError(f"不支持的 provider: {provider}")
         account = Account.create(provider, name, secret)
+        account.concurrency_limit = settings.ACCOUNT_CONCURRENCY_LIMIT
         with self._lock:
             for a in self._accounts[provider]:
                 if a.secret and a.secret == account.secret:
@@ -222,20 +225,24 @@ class Store:
 
     # ── 轮询选择 ─────────────────────────────────────────────────────────────
     def select(self, provider: str, skip_ids: set[str] | None = None) -> Account | None:
-        """按 round-robin 选择下一个可用账号。用完 / 失效的自动跳过。"""
+        """Fairly select and atomically reserve one available account."""
         skip_ids = skip_ids or set()
         now = time.time()
         with self._lock:
-            pool = [
-                a for a in self._accounts.get(provider, [])
-                if a.is_selectable(now) and a.id not in skip_ids
-            ]
-            if not pool:
+            account = choose_account(
+                self._accounts.get(provider, []),
+                now=now,
+                skip_ids=skip_ids,
+            )
+            if account is None:
                 return None
-            idx = self._rotation.get(provider, 0) % len(pool)
-            account = pool[idx]
-            self._rotation[provider] = (idx + 1) % len(pool)
+            account.active_requests += 1
             return account
+
+    def release(self, account: Account) -> None:
+        """Release an in-flight reservation without persisting transient state."""
+        with self._lock:
+            account.active_requests = max(0, account.active_requests - 1)
 
     # ── 导入 / 导出 ─────────────────────────────────────────────────────────
     def export(self) -> dict:

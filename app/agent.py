@@ -5,20 +5,14 @@
 
 from __future__ import annotations
 
+import uuid
+
 from . import settings
 from .models import Account
+from .start_plan import decode_jwt_user_id, prepare_start_plan_body
 
-# 透传客户端 header 时需要剔除的字段
-_DROP_HEADERS = {
-    "host",
-    "content-length",
-    "x-api-key",
-    "authorization",
-    "user-agent",
-    "http-referer",
-    "accept-encoding",
-    "connection",
-}
+# The only client header intentionally forwarded upstream.
+_PASSTHROUGH_HEADERS = {"anthropic-beta"}
 
 
 def build_request(
@@ -26,9 +20,11 @@ def build_request(
     body: dict,
     verify_param: str | None,
     incoming_headers: dict | None = None,
-) -> tuple[str, dict]:
-    """返回 (目标 URL, 请求头)。"""
+    verify_region: str = "sgp",
+) -> tuple[str, dict, dict]:
+    """Return target URL, sanitized upstream headers, and transformed body."""
     provider = account.provider
+    is_start_plan = provider == "zai" and account.mode == "jwt"
 
     if provider == "zai":
         if account.mode == "jwt" and account.jwt_token:
@@ -50,19 +46,31 @@ def build_request(
     headers = {
         "content-type": "application/json",
         **auth,
-        "anthropic-version": "2023-06-01",
         "User-Agent": settings.USER_AGENT,
-        "X-ZCode-App-Version": "3.0.1",
+        "X-ZCode-App-Version": settings.ZCODE_CLIENT_VERSION,
+        "X-Title": f"Z Code@{settings.ZCODE_SOURCE_TITLE}",
         "X-ZCode-Agent": "glm",
-        "HTTP-Referer": "https://zcode.z.ai/",
+        "HTTP-Referer": settings.ZCODE_REFERER,
+        "x-request-id": str(uuid.uuid4()),
+        "x-zcode-trace-id": str(uuid.uuid4()),
+        "x-query-id": f"query_{uuid.uuid4()}",
+        "x-session-id": str(uuid.uuid4()),
     }
+    if not is_start_plan:
+        headers["anthropic-version"] = "2023-06-01"
     if verify_param:
         headers["X-Aliyun-Captcha-Verify-Param"] = verify_param
+        headers["X-Aliyun-Captcha-Verify-Region"] = verify_region
 
     for key, value in (incoming_headers or {}).items():
         lower = key.lower()
-        if lower in _DROP_HEADERS or lower.startswith("x-zcode"):
+        if lower not in _PASSTHROUGH_HEADERS:
             continue
-        headers[key] = value
+        headers[lower] = value
 
-    return target_url, headers
+    upstream_body = body
+    if is_start_plan:
+        user_id = account.user_id or decode_jwt_user_id(account.jwt_token)
+        upstream_body = prepare_start_plan_body(body, user_id=user_id)
+
+    return target_url, headers, upstream_body

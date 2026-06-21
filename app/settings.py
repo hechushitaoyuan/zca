@@ -56,11 +56,19 @@ CAPTCHA_SOLVER_JS = CAPTCHA_SOLVER_DIR / "solver.js"
 CAPTCHA_SOLVE_RETRIES = _int("ZCODE_CAPTCHA_RETRIES", 4)
 CAPTCHA_SOLVE_TIMEOUT = _int("ZCODE_CAPTCHA_TIMEOUT", 40)  # 每次求解超时（秒）
 
+# ── ZCode client identity ────────────────────────────────────────────────────
+ZCODE_CLIENT_VERSION = os.getenv("ZCODE_CLIENT_VERSION", "3.1.2")
+ZCODE_SOURCE_TITLE = os.getenv("ZCODE_SOURCE_TITLE", "cli")
+ZCODE_REFERER = os.getenv("ZCODE_REFERER", "https://zcode.z.ai")
+
 # ── 用量监控 ─────────────────────────────────────────────────────────────────
 # 后台自动刷新账号额度的间隔（秒）。0 表示关闭后台轮询，仅按需刷新。
 QUOTA_REFRESH_INTERVAL = _int("ZCODE_QUOTA_REFRESH_INTERVAL", 60)
 # 限流（cooling）冷却时长（秒）
 COOLING_SECONDS = _int("ZCODE_COOLING_SECONDS", 300)
+RISK_3012_COOLDOWN_BASE = _int("ZCODE_3012_COOLDOWN_BASE", 300)
+RISK_3012_COOLDOWN_MAX = _int("ZCODE_3012_COOLDOWN_MAX", 7200)
+ACCOUNT_CONCURRENCY_LIMIT = max(1, _int("ZCODE_ACCOUNT_CONCURRENCY_LIMIT", 1))
 
 # ── 上游端点 ─────────────────────────────────────────────────────────────────
 UPSTREAM = {
@@ -81,5 +89,5 @@ UPSTREAM = {
 # ZCode 计费 / 额度查询端点
 ZCODE_BILLING_BASE = "https://zcode.z.ai/api/v1/zcode-plan"
 
-USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", "ZCode/3.0.1")
+USER_AGENT = os.getenv("UPSTREAM_USER_AGENT", f"ZCode/{ZCODE_CLIENT_VERSION}")
 APP_VERSION = "2.0.0"
