@@ -139,9 +139,10 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
     try:
         for attempt in range(MAX_CAPTCHA_RETRIES):
             verify_param = None
+            verify_region = "sgp"
             if needs_captcha:
                 try:
-                    verify_param = await captcha_manager.get_verify_param(port)
+                    verify_param, verify_region = await captcha_manager.get_verify_param(port)
                 except Exception as err:  # noqa: BLE001
                     logs.req_err(req_id, f"人机校验失败: {err}")
                     return JSONResponse(
@@ -151,7 +152,7 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
 
             try:
                 url, headers, upstream_body = build_request(
-                    account, body, verify_param, incoming_headers
+                    account, body, verify_param, incoming_headers, verify_region
                 )
                 payload = json.dumps(upstream_body, ensure_ascii=False).encode("utf-8")
             except RuntimeError as err:

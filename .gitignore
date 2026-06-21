@@ -17,6 +17,8 @@ secrets/
 tokens/
 token.txt
 auth.json
+LOCAL-TOKENS.md
+github-Secrets.txt
 
 # ZCode account imports and exports
 *.zcas.json
