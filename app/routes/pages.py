@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 
 from .. import settings
 
@@ -22,12 +22,13 @@ def _html(name: str) -> HTMLResponse:
 
 @router.get("/", include_in_schema=False)
 async def root():
-    return RedirectResponse("/admin")
+    # 根路径直接渲染登录面板，方便公网 IP 与 Cloudflare Tunnel 域名访问。
+    return _html("login.html")
 
 
 @router.get("/admin", include_in_schema=False)
 async def admin_root():
-    return RedirectResponse("/admin/login")
+    return _html("login.html")
 
 
 @router.get("/admin/login", include_in_schema=False)

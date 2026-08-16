@@ -21,6 +21,8 @@ from .scheduling import choose_account
 
 _TBL = "accounts"
 _META = "meta"
+_REQUEST_LOGS = "request_logs"
+_REQUEST_LOG_LIMIT = 10_000
 
 
 class Store:
@@ -64,6 +66,26 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_acc_provider ON {_TBL} (provider);
                 CREATE INDEX IF NOT EXISTS idx_acc_status   ON {_TBL} (status);
+                CREATE TABLE IF NOT EXISTS {_REQUEST_LOGS} (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id    TEXT,
+                    created_at    REAL NOT NULL,
+                    method        TEXT NOT NULL,
+                    path          TEXT NOT NULL,
+                    model         TEXT,
+                    protocol      TEXT,
+                    account_id    TEXT,
+                    account_name  TEXT,
+                    status_code   INTEGER NOT NULL,
+                    latency_ms    INTEGER NOT NULL DEFAULT 0,
+                    input_tokens  INTEGER,
+                    output_tokens INTEGER,
+                    error_type    TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_reqlog_created
+                    ON {_REQUEST_LOGS} (created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_reqlog_account
+                    ON {_REQUEST_LOGS} (account_id);
                 """
             )
             conn.execute(
@@ -252,6 +274,124 @@ class Store:
         """Release an in-flight reservation without persisting transient state."""
         with self._lock:
             account.active_requests = max(0, account.active_requests - 1)
+
+    def reserve_specific(self, account: Account) -> bool:
+        """Reserve a chosen account for an admin test without running the scheduler."""
+        with self._lock:
+            if account.active_requests >= max(1, account.concurrency_limit):
+                return False
+            account.active_requests += 1
+            return True
+
+    # ── 请求日志 ─────────────────────────────────────────────────────────────
+    def record_request_log(
+        self,
+        *,
+        request_id: str,
+        method: str,
+        path: str,
+        model: str,
+        protocol: str,
+        account_id: str | None,
+        account_name: str | None,
+        status_code: int,
+        latency_ms: int,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        error_type: str | None = None,
+        created_at: float | None = None,
+    ) -> None:
+        """Persist request metadata only; prompts, responses and credentials are excluded."""
+        with self._lock, closing(self._connect()) as conn:
+            cursor = conn.execute(
+                f"""INSERT INTO {_REQUEST_LOGS}
+                    (request_id, created_at, method, path, model, protocol,
+                     account_id, account_name, status_code, latency_ms,
+                     input_tokens, output_tokens, error_type)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    request_id,
+                    time.time() if created_at is None else created_at,
+                    method[:12],
+                    path[:160],
+                    model[:80],
+                    protocol[:32],
+                    account_id,
+                    account_name[:160] if account_name else None,
+                    int(status_code),
+                    max(0, int(latency_ms)),
+                    input_tokens,
+                    output_tokens,
+                    error_type[:80] if error_type else None,
+                ),
+            )
+            # 定期裁剪，避免长期运行后日志无限增长。
+            if cursor.lastrowid and cursor.lastrowid % 100 == 0:
+                conn.execute(
+                    f"""DELETE FROM {_REQUEST_LOGS}
+                        WHERE id NOT IN (
+                            SELECT id FROM {_REQUEST_LOGS}
+                            ORDER BY id DESC LIMIT ?
+                        )""",
+                    (_REQUEST_LOG_LIMIT,),
+                )
+            conn.commit()
+
+    def list_request_logs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        query: str = "",
+        status: str = "all",
+    ) -> dict:
+        limit = min(200, max(1, int(limit)))
+        offset = max(0, int(offset))
+        clauses: list[str] = []
+        params: list[object] = []
+        query = query.strip().lower()
+        if query:
+            clauses.append(
+                "(LOWER(model) LIKE ? OR LOWER(path) LIKE ? OR "
+                "LOWER(COALESCE(account_name,'')) LIKE ? OR LOWER(COALESCE(error_type,'')) LIKE ?)"
+            )
+            needle = f"%{query}%"
+            params.extend([needle, needle, needle, needle])
+        if status == "success":
+            clauses.append("status_code BETWEEN 200 AND 299")
+        elif status == "error":
+            clauses.append("NOT (status_code BETWEEN 200 AND 299)")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+        with self._lock, closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"""SELECT id, request_id, created_at, method, path, model, protocol,
+                           account_id, account_name, status_code, latency_ms,
+                           input_tokens, output_tokens, error_type
+                    FROM {_REQUEST_LOGS}{where}
+                    ORDER BY id DESC LIMIT ? OFFSET ?""",
+                (*params, limit, offset),
+            ).fetchall()
+            stats = conn.execute(
+                f"""SELECT COUNT(*) AS total,
+                           COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END),0) AS success,
+                           COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 0 ELSE 1 END),0) AS error
+                    FROM {_REQUEST_LOGS}{where}""",
+                params,
+            ).fetchone()
+        return {
+            "items": [dict(row) for row in rows],
+            "stats": dict(stats) if stats else {"total": 0, "success": 0, "error": 0},
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def clear_request_logs(self) -> int:
+        with self._lock, closing(self._connect()) as conn:
+            count = conn.execute(f"SELECT COUNT(*) FROM {_REQUEST_LOGS}").fetchone()[0]
+            conn.execute(f"DELETE FROM {_REQUEST_LOGS}")
+            conn.commit()
+        return int(count)
 
     # ── 导入 / 导出 ─────────────────────────────────────────────────────────
     def export(self) -> dict:

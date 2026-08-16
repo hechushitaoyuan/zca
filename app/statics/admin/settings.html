@@ -10,60 +10,91 @@
 <body>
 <div id="admin-header" data-active="/admin/settings"></div>
 
-<main class="admin-main">
-  <div class="page-hd">
-    <div>
+<main class="admin-main settings-main">
+  <section class="settings-inline-card">
+    <div class="settings-inline-title">
       <div class="page-title">设置</div>
-      <div class="page-sub">后台鉴权密钥与网关访问控制</div>
+      <div class="page-sub">访问控制与额度刷新</div>
     </div>
-  </div>
+    <label class="settings-compact-field">
+      <span>后台密码</span>
+      <input class="input" id="admin-key" type="text" autocomplete="off" placeholder="后台密码">
+    </label>
+    <label class="settings-compact-field">
+      <span>API Key</span>
+      <input class="input" id="gateway-key" type="text" autocomplete="off" placeholder="留空表示不校验">
+    </label>
+    <label class="settings-compact-field">
+      <span>额度刷新时间（秒）</span>
+      <span class="settings-save-group">
+        <input class="input" id="quota-interval" type="number" min="0" step="5" placeholder="60">
+        <button onclick="saveSettings()" class="dialog-btn dialog-btn-primary">保存</button>
+      </span>
+    </label>
+  </section>
 
-  <div class="settings-card">
-    <div class="section-title" style="margin-bottom:16px">鉴权</div>
-    <div class="settings-row">
-      <label>后台密码</label>
-      <div class="hint">用于登录此管理后台。修改后需用新密码重新登录。</div>
-      <input class="input" id="admin-key" type="text" placeholder="后台密码">
+  <section class="traffic-card">
+    <div class="traffic-toolbar">
+      <div class="traffic-recording"><span></span>正在记录</div>
+      <div class="traffic-search-wrap">
+        <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+        <input id="log-search" placeholder="搜索模型、路径、账号或错误…" oninput="scheduleLogSearch()">
+      </div>
+      <div class="traffic-filter" id="log-filter">
+        <button class="active" data-status="all" onclick="setLogStatus('all')">全部</button>
+        <button data-status="success" onclick="setLogStatus('success')">成功</button>
+        <button data-status="error" onclick="setLogStatus('error')">错误</button>
+      </div>
+      <div class="traffic-summary">
+        <span class="traffic-total" id="log-total">0 总计</span>
+        <span class="traffic-ok" id="log-success">0 成功</span>
+        <span class="traffic-error" id="log-error">0 错误</span>
+      </div>
+      <button class="traffic-icon-btn" onclick="loadLogs(true)" title="刷新">
+        <svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg>
+      </button>
+      <button class="traffic-icon-btn traffic-clear" onclick="clearLogs()" title="清空日志">
+        <svg viewBox="0 0 24 24"><path d="M5 7h14"/><path d="M9 7V4h6v3"/><path d="M8 10v9h8v-9"/></svg>
+      </button>
     </div>
-    <div class="settings-row">
-      <label>网关 API Key（可选）</label>
-      <div class="hint">设置后，调用 <code>/v1/messages</code> 须携带 <code>Authorization: Bearer &lt;key&gt;</code> 或 <code>x-api-key</code>。留空则不校验。</div>
-      <input class="input" id="gateway-key" type="text" placeholder="留空表示不启用">
-    </div>
-    <div class="settings-row">
-      <label>额度刷新间隔（秒）</label>
-      <div class="hint">后台自动刷新各账号额度与状态的周期。设为 0 关闭自动刷新（仍可手动刷新）。修改后即时生效。</div>
-      <input class="input" id="quota-interval" type="number" min="0" step="5" placeholder="60">
-    </div>
-    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
-      <button onclick="saveSettings()" class="dialog-btn dialog-btn-primary">保存</button>
-    </div>
-  </div>
 
-  <div class="settings-card">
-    <div class="section-title" style="margin-bottom:12px">使用说明</div>
-    <div class="hint" style="line-height:1.9">
-      · 在「账号池」粘贴 Coding Plan JWT 或 API Key 即可加入轮询。<br>
-      · 请求按 round-robin 分发；某账号额度用完会自动切到下一个账号。<br>
-      · 账号额度、状态在「账号池」页实时刷新展示。<br>
-      · 对话端点：<code id="endpoint">/v1/messages</code>（兼容 Anthropic Messages 协议）。
+    <div class="traffic-table-wrap">
+      <table class="traffic-table">
+        <thead><tr>
+          <th>状态</th><th>方法</th><th>模型</th><th>协议</th><th>账号</th>
+          <th>路径</th><th>Token 消耗</th><th>耗时</th><th>时间</th>
+        </tr></thead>
+        <tbody id="log-body"><tr><td colspan="9" class="empty-state">暂无调用记录</td></tr></tbody>
+      </table>
     </div>
-  </div>
+    <div class="traffic-pagination">
+      <span>每页 50</span>
+      <div>
+        <button id="log-prev" onclick="changeLogPage(-1)">‹</button>
+        <span id="log-page">1 / 1</span>
+        <button id="log-next" onclick="changeLogPage(1)">›</button>
+      </div>
+      <span id="log-range">显示 0 条</span>
+    </div>
+  </section>
 </main>
 
 <script src="/static/js/auth.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/toast.js?v={{APP_VERSION}}"></script>
 <script src="/static/js/header.js?v={{APP_VERSION}}"></script>
 <script>
+let logPage=0,logStatus='all',logTotal=0,logTimer=null,searchTimer=null;
+const LOG_PAGE_SIZE=50;
+
 (async()=>{
   await renderAdminHeader();
   const key=await adminKey.get();
   if(!key||!await verifyKey(ADMIN_API+'/verify',key).catch(()=>false))return location.href='/admin/login';
-  document.getElementById('endpoint').textContent=location.origin+'/v1/messages';
-  load();
+  await Promise.all([loadSettings(),loadLogs()]);
+  logTimer=setInterval(()=>{if(!document.hidden)loadLogs(true);},5000);
 })();
 
-async function load(){
+async function loadSettings(){
   try{
     const d=await api('GET','/settings');
     document.getElementById('admin-key').value=d.admin_key||'';
@@ -80,10 +111,71 @@ async function saveSettings(){
   if(isNaN(quota_refresh_interval)||quota_refresh_interval<0)return showToast('刷新间隔必须是非负整数','error');
   try{
     await api('PUT','/settings',{admin_key,gateway_key,quota_refresh_interval});
-    await adminKey.set(admin_key);   // 同步本地保存，避免改密后被登出
-    showToast('已保存','success');
+    await adminKey.set(admin_key);
+    showToast('设置已保存','success');
   }catch(e){showToast('保存失败: '+e.message,'error');}
 }
+
+async function loadLogs(silent){
+  const query=document.getElementById('log-search').value.trim();
+  const qs=new URLSearchParams({limit:LOG_PAGE_SIZE,offset:logPage*LOG_PAGE_SIZE,status:logStatus,query});
+  try{
+    const d=await api('GET','/logs?'+qs.toString());
+    logTotal=Number(d.stats?.total)||0;
+    renderLogStats(d.stats||{});
+    renderLogs(d.items||[]);
+  }catch(e){if(!silent)showToast('日志加载失败: '+e.message,'error');}
+}
+
+function renderLogStats(s){
+  document.getElementById('log-total').textContent=(s.total||0)+' 总计';
+  document.getElementById('log-success').textContent=(s.success||0)+' 成功';
+  document.getElementById('log-error').textContent=(s.error||0)+' 错误';
+}
+
+function renderLogs(items){
+  const body=document.getElementById('log-body');
+  if(!items.length)body.innerHTML='<tr><td colspan="9" class="empty-state">暂无调用记录</td></tr>';
+  else body.innerHTML=items.map(item=>{
+    const ok=item.status_code>=200&&item.status_code<300;
+    const tokens=(item.input_tokens==null&&item.output_tokens==null)?'—':
+      `<span class="token-lines">输入: ${fmtNum(item.input_tokens)}<br>输出: ${fmtNum(item.output_tokens)}</span>`;
+    return `<tr>
+      <td><span class="traffic-status ${ok?'ok':'bad'}">${item.status_code}</span></td>
+      <td class="traffic-method">${esc(item.method)}</td>
+      <td class="traffic-model">${esc(item.model||'—')}</td>
+      <td><span class="traffic-protocol">${esc(item.protocol||'—')}</span></td>
+      <td>${esc(item.account_name||'—')}</td>
+      <td class="traffic-path">${esc(item.path)}</td>
+      <td>${tokens}</td>
+      <td>${Number(item.latency_ms)||0}ms</td>
+      <td>${fmtTime(item.created_at)}</td>
+    </tr>`;
+  }).join('');
+  const pages=Math.max(1,Math.ceil(logTotal/LOG_PAGE_SIZE));
+  if(logPage>=pages){logPage=pages-1;return loadLogs(true);}
+  document.getElementById('log-page').textContent=(logPage+1)+' / '+pages;
+  document.getElementById('log-prev').disabled=logPage<=0;
+  document.getElementById('log-next').disabled=logPage+1>=pages;
+  const start=logTotal?logPage*LOG_PAGE_SIZE+1:0,end=Math.min(logTotal,(logPage+1)*LOG_PAGE_SIZE);
+  document.getElementById('log-range').textContent=`显示 ${start} 到 ${end}，共 ${logTotal} 条`;
+}
+
+function setLogStatus(status){
+  logStatus=status;logPage=0;
+  document.querySelectorAll('#log-filter button').forEach(el=>el.classList.toggle('active',el.dataset.status===status));
+  loadLogs();
+}
+function changeLogPage(delta){logPage=Math.max(0,logPage+delta);loadLogs();}
+function scheduleLogSearch(){clearTimeout(searchTimer);searchTimer=setTimeout(()=>{logPage=0;loadLogs();},250);}
+async function clearLogs(){
+  if(!confirm('确认清空全部流量日志？'))return;
+  try{const d=await api('DELETE','/logs');logPage=0;await loadLogs();showToast(`已清空 ${d.deleted} 条日志`,'success');}
+  catch(e){showToast('清空失败: '+e.message,'error');}
+}
+function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function fmtNum(v){if(v==null)return'—';v=Number(v)||0;return v>=1000?(v/1000).toFixed(v>=100000?0:1)+'k':String(v);}
+function fmtTime(value){const d=new Date(Number(value)*1000);return isNaN(d)?'—':d.toLocaleTimeString('zh-CN',{hour12:false});}
 </script>
 </body>
 </html>

@@ -79,7 +79,7 @@ ssh -L 6080:127.0.0.1:6080 <VPS用户>@<VPS地址>
 
 ## 3.2 公网直连（可选，需先满足安全前置）
 
-仅当甲方明确要求通过公网 IP（如 `http://<公网IP>:8047/admin`）访问时，才放开监听地址。
+仅当明确要求通过公网 IP（如 `http://<公网IP>:8047/`）访问时，才放开监听地址。
 
 **放开前必须全部满足：**
 
@@ -103,6 +103,16 @@ docker compose up -d   # 重新应用端口绑定
 # 本机自检（不经公网）
 curl -fsS http://127.0.0.1:8047/health
 ```
+
+放开后可直接访问：
+
+- 后台登录：`http://<公网IP>:8047/`
+- API Base URL：`http://<公网IP>:8047/v1`
+- Anthropic Messages：`http://<公网IP>:8047/v1/messages`
+
+通过 Cloudflare Tunnel 接入域名时，源站填写 `http://127.0.0.1:8047`，随后同样使用
+`https://你的域名/` 登录、使用 `https://你的域名/v1` 作为客户端 Base URL。Cloudflare
+只代理 8047；noVNC 的 6080 仍须保持回环地址并经 SSH 隧道访问。
 
 > 回退到仅本机：把 `ZCA_BIND_IP` 改回 `127.0.0.1`（或删除该行）后 `docker compose up -d`。
 > 切勿在日志、报告或提交中回显真实 `ZCODE_ADMIN_KEY` / `ZCODE_GATEWAY_KEY`。

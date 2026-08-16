@@ -144,6 +144,15 @@ tr:hover td{background:#fdfdfd}
 .row-icon-danger:hover{color:#92514b}
 @keyframes spin{to{transform:rotate(360deg)}}
 
+.account-detail-head{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.test-model-switch{height:32px;padding:0 10px 0 12px;border:1px solid #e7e7e7;border-radius:999px;background:#fff;display:flex;align-items:center;gap:8px;font-size:12px;color:#777}
+.test-model-switch select{font-weight:600;cursor:pointer;padding-right:4px;color:#333}
+.row-test-btn{height:27px;padding:0 9px;border-radius:999px;background:#f4f7f5;color:#3e8f69;display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:600;white-space:nowrap}
+.row-test-btn:hover{background:#eaf3ed}
+.row-test-btn:disabled{opacity:.6;cursor:wait}
+.row-test-btn svg{width:13px;height:13px;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;fill:none}
+.row-test-btn.is-loading svg{animation:spin .85s linear infinite}
+
 /* Filters */
 .filter-bar{display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .filter-chip{height:30px;padding:0 12px;border-radius:999px;font-size:12px;font-weight:500;color:#8f8f8f;background:#f5f5f5;display:inline-flex;align-items:center;gap:6px;transition:background .15s,color .15s}
@@ -182,6 +191,51 @@ tr:hover td{background:#fdfdfd}
 .settings-row label{font-size:13px;font-weight:600}
 .settings-row .hint{font-size:12px;color:var(--fg-muted)}
 
+/* Compact settings + traffic log */
+.settings-main{max-width:1440px}
+.settings-inline-card{background:#fff;border-radius:14px;padding:18px 20px;margin-bottom:16px;display:grid;grid-template-columns:minmax(140px,.7fr) repeat(3,minmax(210px,1fr));gap:18px;align-items:end}
+.settings-inline-title{align-self:center}
+.settings-inline-title .page-title{font-size:20px}
+.settings-compact-field{display:grid;gap:7px;font-size:12px;font-weight:600;color:#4b4b4b;min-width:0}
+.settings-save-group{display:flex;gap:8px;align-items:center}
+.settings-save-group .input{min-width:0}
+.settings-save-group .dialog-btn{flex:0 0 auto}
+.traffic-card{background:#fff;border:1px solid #ededed;border-radius:14px;overflow:hidden;box-shadow:0 1px 2px rgba(0,0,0,.02)}
+.traffic-toolbar{min-height:64px;padding:12px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #eee;flex-wrap:wrap}
+.traffic-recording{height:32px;padding:0 13px;border-radius:5px;background:#ef5350;color:#fff;font-size:12px;font-weight:700;display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+.traffic-recording span{width:8px;height:8px;border-radius:50%;background:#fff;box-shadow:0 0 0 0 rgba(255,255,255,.5);animation:pulseWhite 1.8s infinite}
+@keyframes pulseWhite{0%{box-shadow:0 0 0 0 rgba(255,255,255,.45)}70%{box-shadow:0 0 0 6px rgba(255,255,255,0)}100%{box-shadow:0 0 0 0 rgba(255,255,255,0)}}
+.traffic-search-wrap{height:34px;min-width:260px;flex:1;border:1px solid #eee;border-radius:8px;display:flex;align-items:center;gap:8px;padding:0 10px;background:#fcfcfc}
+.traffic-search-wrap svg{width:14px;height:14px;stroke:#aaa;fill:none;stroke-width:1.8}
+.traffic-search-wrap input{width:100%;font-size:12px}
+.traffic-search-wrap input::placeholder{color:#aaa}
+.traffic-filter{display:flex;align-items:center;background:#f6f6f6;border-radius:999px;padding:3px;gap:2px}
+.traffic-filter button{height:26px;padding:0 10px;border-radius:999px;color:#777;font-size:11px}
+.traffic-filter button.active{background:#fff;color:#222;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+.traffic-summary{display:flex;align-items:center;gap:10px;font-size:11px;font-weight:600;white-space:nowrap}
+.traffic-total{color:#4779d8}.traffic-ok{color:#16a34a}.traffic-error{color:#ef5350}
+.traffic-icon-btn{width:30px;height:30px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;color:#89919a}
+.traffic-icon-btn:hover{background:#f5f5f5;color:#444}
+.traffic-icon-btn svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;fill:none}
+.traffic-clear{color:#a3a3a3}
+.traffic-table-wrap{height:min(62vh,650px);min-height:360px;overflow:auto}
+.traffic-table{width:100%;min-width:1050px;border-collapse:separate;border-spacing:0}
+.traffic-table thead{position:sticky;top:0;z-index:2}
+.traffic-table th{background:#f8f9fa;color:#7c838c;font-size:11px;font-weight:600;border-bottom:1px solid #eee;padding:9px 10px}
+.traffic-table td{padding:8px 10px;font-size:11px;border-bottom:1px solid #f2f2f2;white-space:nowrap;color:#535a62}
+.traffic-status{display:inline-flex;min-width:34px;height:20px;align-items:center;justify-content:center;border-radius:999px;color:#fff;font-size:10px;font-weight:700;font-family:ui-monospace,monospace}
+.traffic-status.ok{background:#10b981}.traffic-status.bad{background:#fb6178}
+.traffic-method{font-weight:600;color:#555!important}
+.traffic-model{font-family:ui-monospace,monospace;color:#2563eb!important}
+.traffic-protocol{display:inline-flex;height:20px;align-items:center;padding:0 7px;border-radius:999px;background:#13b866;color:#fff;font-size:10px;font-weight:600}
+.traffic-path{font-family:ui-monospace,monospace;color:#667085!important}
+.token-lines{font-size:10px;line-height:1.45;color:#59616c}
+.traffic-pagination{height:46px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;color:#777;font-size:11px;border-top:1px solid #eee}
+.traffic-pagination>div{display:flex;align-items:center;gap:14px}
+.traffic-pagination button{width:28px;height:28px;border-radius:6px;font-size:20px;line-height:1}
+.traffic-pagination button:hover:not(:disabled){background:#f4f4f4}
+.traffic-pagination button:disabled{opacity:.3;cursor:not-allowed}
+
 /* Footer */
 .site-footer{position:fixed;right:18px;bottom:10px;z-index:40;display:inline-flex;align-items:center;gap:6px;color:rgba(23,23,23,.24);font-size:11px;font-weight:500}
 .cb{width:14px;height:14px;accent-color:var(--fg);cursor:pointer}
@@ -190,4 +244,11 @@ tr:hover td{background:#fdfdfd}
   .admin-header-inner{padding:0 14px}
   .admin-main{padding:74px 14px 24px}
   .admin-nav-link{padding:6px 10px;font-size:13px}
+  .settings-inline-card{grid-template-columns:1fr}
+  .traffic-search-wrap{min-width:100%}
+  .traffic-summary{order:5;width:100%}
+}
+
+@media (min-width:721px) and (max-width:1080px){
+  .settings-inline-card{grid-template-columns:repeat(2,minmax(220px,1fr))}
 }

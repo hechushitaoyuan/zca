@@ -2,21 +2,30 @@
 
 from __future__ import annotations
 
+import json
+import secrets
 import time
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from .. import settings
+from ..agent import build_request
 from ..auth_admin import verify_admin_key
-from ..models import PROVIDERS, Status
+from ..captcha import InteractiveCaptchaRequired, captcha_manager
+from ..models import PROVIDERS, FailureKind, Status
 from ..oauth import ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
 from ..store import store
+from ..traffic import UsageTracker, record_request
+from ..upstream_errors import classify_upstream_failure
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(verify_admin_key)])
 
 # 进行中的 OAuth 登录流程（flow_id -> ZaiAuthFlow），需跨请求保留 poll_token
 _login_flows: dict[str, ZaiAuthFlow] = {}
+_TEST_MODELS = {"GLM-5.3", "GLM-5.2", "GLM-5-Turbo"}
 
 
 # ── 鉴权探针 ─────────────────────────────────────────────────────────────────
@@ -143,6 +152,160 @@ async def refresh_one(account_id: str):
         return {"ok": False, "message": "仅 Coding Plan (JWT) 账号支持额度查询"}
     res = await fetch_quota(acc)
     return {"ok": "error" not in res, "result": res, "account": acc.public_view()}
+
+
+# ── 逐账号模型调用测试 ──────────────────────────────────────────────────────
+@router.post("/accounts/{account_id}/test")
+async def test_account(account_id: str, request: Request, payload: dict = Body(...)):
+    account = store.find_any(account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    model = str(payload.get("model") or "GLM-5.3").strip()
+    model = next((item for item in _TEST_MODELS if item.lower() == model.lower()), "")
+    if not model:
+        raise HTTPException(400, "不支持的测试模型")
+    if not store.reserve_specific(account):
+        raise HTTPException(409, "账号正在处理其他请求，请稍后再试")
+
+    request_meta = {
+        "request_id": f"test-{secrets.token_hex(3)}",
+        "started": time.monotonic(),
+        "method": "TEST",
+        "path": request.url.path,
+        "model": model,
+        "protocol": "账号测试",
+    }
+    test_body = {
+        "model": model,
+        "max_tokens": 16,
+        "stream": False,
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Reply with exactly: OK"}]}
+        ],
+    }
+    try:
+        for attempt in range(2):
+            verify_param = None
+            verify_region = "sgp"
+            if account.provider == "zai" and account.mode == "jwt":
+                try:
+                    verify_param, verify_region = await captcha_manager.get_verify_param(
+                        request.url.port or settings.PORT
+                    )
+                except InteractiveCaptchaRequired:
+                    record_request(
+                        request_meta,
+                        account,
+                        409,
+                        error_type="captcha_interactive_required",
+                    )
+                    return {
+                        "ok": False,
+                        "status_code": 409,
+                        "type": "captcha_interactive_required",
+                        "message": "需要在 noVNC 中完成人机验证后重试",
+                    }
+                except Exception:  # noqa: BLE001
+                    record_request(request_meta, account, 503, error_type="captcha_error")
+                    return {
+                        "ok": False,
+                        "status_code": 503,
+                        "type": "captcha_error",
+                        "message": "无法完成人机验证",
+                    }
+
+            try:
+                url, headers, upstream_body = build_request(
+                    account,
+                    test_body,
+                    verify_param,
+                    {},
+                    verify_region,
+                )
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(connect=30.0, read=150.0, write=120.0, pool=30.0)
+                ) as client:
+                    response = await client.post(
+                        url,
+                        headers=headers,
+                        content=json.dumps(upstream_body, ensure_ascii=False).encode("utf-8"),
+                    )
+            except (httpx.HTTPError, RuntimeError):
+                account.mark_failure(FailureKind.TRANSPORT, "账号测试连接失败")
+                account.last_checked_at = time.time()
+                store.update_account(account)
+                record_request(request_meta, account, 503, error_type=FailureKind.TRANSPORT)
+                return {
+                    "ok": False,
+                    "status_code": 503,
+                    "type": FailureKind.TRANSPORT,
+                    "message": "连接上游失败",
+                }
+
+            usage = UsageTracker()
+            usage.feed(response.content)
+            if 200 <= response.status_code < 300:
+                account.mark_success()
+                account.last_checked_at = time.time()
+                store.update_account(account)
+                record_request(request_meta, account, response.status_code, usage=usage)
+                return {
+                    "ok": True,
+                    "status_code": response.status_code,
+                    "model": model,
+                    "message": "模型调用成功",
+                }
+
+            failure = classify_upstream_failure(response.status_code, response.text)
+            if failure == FailureKind.CAPTCHA and attempt == 0 and account.mode == "jwt":
+                captcha_manager.invalidate()
+                continue
+            if failure == FailureKind.AUTH:
+                account.mark_failure(failure, "账号测试鉴权失败", status=Status.INVALID)
+            elif failure == FailureKind.EXHAUSTED:
+                account.mark_failure(failure, "账号测试额度用完", status=Status.EXHAUSTED)
+            elif failure in (FailureKind.RATE_LIMIT, FailureKind.RISK_3012):
+                account.start_cooldown(
+                    kind=failure,
+                    reason="账号测试触发上游风控",
+                    base_seconds=settings.COOLING_SECONDS,
+                    max_seconds=settings.RISK_3012_COOLDOWN_MAX,
+                )
+            else:
+                account.mark_failure(failure, f"账号测试 HTTP {response.status_code}")
+            account.last_checked_at = time.time()
+            store.update_account(account)
+            record_request(
+                request_meta,
+                account,
+                response.status_code,
+                usage=usage,
+                error_type=failure,
+            )
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "type": failure,
+                "message": f"模型调用失败（HTTP {response.status_code}）",
+            }
+    finally:
+        store.release(account)
+
+
+# ── 流量日志 ─────────────────────────────────────────────────────────────────
+@router.get("/logs")
+async def request_logs(
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    query: str = Query("", max_length=120),
+    status: str = Query("all", pattern="^(all|success|error)$"),
+):
+    return store.list_request_logs(limit=limit, offset=offset, query=query, status=status)
+
+
+@router.delete("/logs")
+async def clear_request_logs():
+    return {"deleted": store.clear_request_logs()}
 
 
 # ── OAuth 登录（Z.AI）────────────────────────────────────────────────────────

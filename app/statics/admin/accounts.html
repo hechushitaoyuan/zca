@@ -46,7 +46,17 @@
   </div>
 
   <div class="section-head">
-    <div class="section-title">账户明细 <span class="section-count-badge" id="tbl-count">0</span></div>
+    <div class="account-detail-head">
+      <div class="section-title">账户明细 <span class="section-count-badge" id="tbl-count">0</span></div>
+      <label class="test-model-switch">
+        <span>测试模型</span>
+        <select id="test-model">
+          <option value="GLM-5.3">GLM-5.3</option>
+          <option value="GLM-5.2">GLM-5.2</option>
+          <option value="GLM-5-Turbo">GLM-5-Turbo</option>
+        </select>
+      </label>
+    </div>
     <div class="section-meta" id="last-updated"></div>
   </div>
 
@@ -62,7 +72,7 @@
         <th class="table-center" style="width:60px">调用</th>
         <th class="table-center" style="width:60px">失败</th>
         <th style="width:120px">最近使用</th>
-        <th style="width:120px">操作</th>
+        <th style="width:190px">操作</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
@@ -154,7 +164,7 @@
 <script src="/static/js/header.js?v={{APP_VERSION}}"></script>
 <script>
 let allAccounts=[], curFilter='all', _cb=null, _editId='', _timer=null;
-const refreshing=new Set();
+const refreshing=new Set(),testing=new Set();
 
 const STATUS_LABEL={active:'正常',exhausted:'用完',cooling:'限流',invalid:'异常',disabled:'禁用'};
 
@@ -214,6 +224,7 @@ function rowHtml(a){
   const isJwt=a.mode==='jwt';
   const isDisabled=a.status==='disabled';
   const loading=refreshing.has(a.id);
+  const testLoading=testing.has(a.id);
   return `<tr>
     <td><span class="tok">${esc(a.token_masked)}</span><div style="font-size:11px;color:#aaa;margin-top:2px">${esc(a.name)}</div></td>
     <td class="table-center">${a.provider}</td>
@@ -224,6 +235,10 @@ function rowHtml(a){
     <td class="table-center" style="color:#9a9a9a">${a.fail_count||0}</td>
     <td style="font-size:12px;color:#9a9a9a">${fmtDate(a.last_used_at)}</td>
     <td><div class="row-actions">
+      <button onclick="testOne('${a.id}')" class="row-test-btn${testLoading?' is-loading':''}" ${testLoading?'disabled':''} title="使用所选模型测试此账号">
+        <svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v5l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/><path d="M8 14h8"/></svg>
+        ${testLoading?'测试中':'测试'}
+      </button>
       ${isJwt?`<button onclick="refreshOne('${a.id}')" class="row-icon-btn${loading?' is-loading':''}" title="刷新额度"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg></button>`:''}
       <button onclick="toggleEnabled('${a.id}',${isDisabled})" class="row-icon-btn" title="${isDisabled?'恢复':'禁用'}">
         ${isDisabled?'<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.708"/><path d="M3 4v5h5"/></svg>':'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8.5 8.5 15.5 15.5"/></svg>'}
@@ -368,6 +383,17 @@ async function refreshOne(id){
   try{await api('POST','/accounts/'+id+'/refresh');showToast('额度已刷新','success');}
   catch(e){showToast('刷新失败: '+e.message,'error');}
   finally{refreshing.delete(id);await load();}
+}
+async function testOne(id){
+  if(testing.has(id))return;
+  const model=document.getElementById('test-model').value;
+  testing.add(id);renderTable();
+  try{
+    const d=await api('POST','/accounts/'+id+'/test',{model});
+    if(d.ok)showToast(`${model} 测试成功`,'success');
+    else showToast(d.message||`${model} 测试失败`,'error');
+  }catch(e){showToast('测试失败: '+e.message,'error');}
+  finally{testing.delete(id);await load();}
 }
 async function refreshAll(){
   showToast('正在刷新全部额度…','info');
