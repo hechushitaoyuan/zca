@@ -12,7 +12,7 @@ from app import settings
 from app.models import Account
 from app.routes import admin_api, gateway, pages
 from app.store import Store
-from app.traffic import UsageTracker, masked_account_name
+from app.traffic import UsageTracker, account_display_name
 
 
 class RequestLogStoreTests(unittest.TestCase):
@@ -74,6 +74,24 @@ class RequestLogStoreTests(unittest.TestCase):
         self.store.release(account)
         self.assertTrue(self.store.reserve_specific(account))
 
+    def test_old_masked_log_is_displayed_with_current_full_account_name(self) -> None:
+        account = self.store.add_account(
+            "zai", "full-address@example.com", "header.payload.signature"
+        )
+        self.store.record_request_log(
+            request_id="old",
+            method="TEST",
+            path=f"/admin/api/accounts/{account.id}/test",
+            model="GLM-5.3",
+            protocol="账号测试",
+            account_id=account.id,
+            account_name="ful***@example.com",
+            status_code=400,
+            latency_ms=10,
+        )
+        item = self.store.list_request_logs()["items"][0]
+        self.assertEqual(item["account_name"], "full-address@example.com")
+
 
 class TrafficHelpersTests(unittest.TestCase):
     def test_usage_tracker_handles_split_json_fields(self) -> None:
@@ -84,9 +102,9 @@ class TrafficHelpersTests(unittest.TestCase):
         self.assertEqual(tracker.input_tokens, 123)
         self.assertEqual(tracker.output_tokens, 17)
 
-    def test_account_name_is_masked(self) -> None:
+    def test_account_name_is_shown_in_full(self) -> None:
         account = Account.create("zai", "someone@example.com", "header.payload.signature")
-        self.assertEqual(masked_account_name(account), "som***@example.com")
+        self.assertEqual(account_display_name(account), "someone@example.com")
 
 
 class PublicRouteTests(unittest.IsolatedAsyncioTestCase):
@@ -180,6 +198,92 @@ class AccountTestEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(fake_store.updated)
         self.assertTrue(fake_store.released)
         self.assertEqual(record.call_args.args[2], 200)
+
+    async def test_reused_captcha_400_is_retried_once(self) -> None:
+        account = Account.create("zai", "jwt@example.com", "header.payload.signature")
+
+        class FakeStore:
+            released = False
+
+            @staticmethod
+            def find_any(account_id):
+                return account if account_id == account.id else None
+
+            @staticmethod
+            def reserve_specific(selected):
+                selected.active_requests += 1
+                return True
+
+            @staticmethod
+            def update_account(_selected):
+                pass
+
+            def release(self, selected):
+                selected.active_requests -= 1
+                self.released = True
+
+        class FakeCaptcha:
+            solve_calls = 0
+            invalidate_calls = 0
+
+            async def get_verify_param(self, _port):
+                self.solve_calls += 1
+                return f"fresh-{self.solve_calls}", "sgp"
+
+            def invalidate(self):
+                self.invalidate_calls += 1
+
+        class FakeClient:
+            responses = [
+                httpx.Response(
+                    400,
+                    content=b'{"code":"F018","message":"CaptchaVerifyParam reused"}',
+                ),
+                httpx.Response(200, content=b'{"usage":{"output_tokens":1}}'),
+            ]
+
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def post(self, *_args, **_kwargs):
+                return self.responses.pop(0)
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "scheme": "http",
+                "server": ("testserver", 3000),
+                "path": f"/admin/api/accounts/{account.id}/test",
+                "query_string": b"",
+                "headers": [],
+            }
+        )
+        fake_store = FakeStore()
+        fake_captcha = FakeCaptcha()
+        with (
+            patch.object(admin_api, "store", fake_store),
+            patch.object(admin_api, "captcha_manager", fake_captcha),
+            patch.object(
+                admin_api,
+                "build_request",
+                return_value=("https://upstream.invalid", {}, {"model": "GLM-5.3"}),
+            ),
+            patch.object(admin_api.httpx, "AsyncClient", FakeClient),
+            patch.object(admin_api, "record_request"),
+        ):
+            result = await admin_api.test_account(account.id, request, {"model": "GLM-5.3"})
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(fake_captcha.solve_calls, 2)
+        self.assertEqual(fake_captcha.invalidate_calls, 1)
+        self.assertTrue(fake_store.released)
 
 
 if __name__ == "__main__":

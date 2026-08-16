@@ -73,24 +73,24 @@ def make_manager(recorder, *, scene="11xygtvd", region="sgp", prefix="no8xfe") -
 
 
 class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
-    async def test_ttl_cache_starts_subprocess_once(self) -> None:
+    async def test_each_request_gets_a_fresh_verify_param(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)
         first = await mgr.get_verify_param()
         second = await mgr.get_verify_param()
         self.assertEqual(first, (VALID_PARAM, "sgp"))
         self.assertEqual(second, (VALID_PARAM, "sgp"))
-        self.assertEqual(len(recorder.calls), 1)
+        self.assertEqual(len(recorder.calls), 2)
 
-    async def test_single_flight_concurrent_calls_start_once(self) -> None:
+    async def test_concurrent_calls_each_solve_a_unique_consumable_param(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)
         results = await asyncio.gather(*(mgr.get_verify_param() for _ in range(5)))
-        self.assertEqual(len(recorder.calls), 1)
+        self.assertEqual(len(recorder.calls), 5)
         for res in results:
             self.assertEqual(res, (VALID_PARAM, "sgp"))
 
-    async def test_invalidate_forces_resolve(self) -> None:
+    async def test_invalidate_does_not_reintroduce_reuse(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)
         await mgr.get_verify_param()
@@ -189,7 +189,6 @@ class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
         proc = recorder.procs[0]
         self.assertTrue(proc.killed, "取消后必须 kill 子进程")
         self.assertTrue(proc.waited, "kill 后必须 wait 回收，避免遗留进程")
-        self.assertIsNone(mgr._cached, "取消不得产生缓存值")
 
     # ── P2：直接测 _run_solver 的具体异常子类 ─────────────────────────────────
     async def test_run_solver_timeout_subclass(self) -> None:

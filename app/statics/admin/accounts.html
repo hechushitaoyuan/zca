@@ -386,6 +386,7 @@ async function refreshOne(id){
 }
 async function testOne(id){
   if(testing.has(id))return;
+  if(testing.size)return showToast('请等待当前账号测试完成，再测试下一个账号','info');
   const model=document.getElementById('test-model').value;
   testing.add(id);renderTable();
   try{

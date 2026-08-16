@@ -256,7 +256,10 @@ async def test_account(account_id: str, request: Request, payload: dict = Body(.
                     "message": "模型调用成功",
                 }
 
-            failure = classify_upstream_failure(response.status_code, response.text)
+            failure = (
+                classify_upstream_failure(response.status_code, response.text)
+                or FailureKind.UPSTREAM
+            )
             if failure == FailureKind.CAPTCHA and attempt == 0 and account.mode == "jwt":
                 captcha_manager.invalidate()
                 continue

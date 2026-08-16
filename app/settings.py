@@ -52,8 +52,7 @@ DEFAULT_ADMIN_KEY = os.getenv("ZCODE_ADMIN_KEY", "zcode")
 # ⚠️ 公网监听（ZCA_BIND_IP=0.0.0.0）前必须设为强随机非空值。
 GATEWAY_KEY = (os.getenv("ZCODE_GATEWAY_KEY", "") or "").strip()
 
-# ── 验证码缓存 ───────────────────────────────────────────────────────────────
-CAPTCHA_CACHE_TTL = _int("CAPTCHA_CACHE_TTL", 45_000)          # ms
+# ── 验证码配置缓存 ───────────────────────────────────────────────────────────
 CAPTCHA_CONFIG_CACHE_TTL = _int("CAPTCHA_CONFIG_CACHE_TTL", 600_000)  # ms
 
 # 验证码求解（默认 Node + 真实 Chromium；可显式切回旧 jsdom 引擎）

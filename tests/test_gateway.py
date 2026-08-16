@@ -214,6 +214,40 @@ class GatewayCaptchaWiringTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(account.active_requests, 0)
 
+    async def test_reused_captcha_400_retries_with_a_fresh_param(self) -> None:
+        client = SequenceClient([
+            FakeResponse(
+                400,
+                b'{"code":"F018","message":"CaptchaVerifyParam reused"}',
+                "application/json",
+            ),
+            FakeResponse(200, b"event: message_stop\ndata: {}\n\n", "text/event-stream"),
+        ])
+        store = FakeStore()
+        fake_captcha = FakeCaptcha()
+        account = self._jwt_account("captcha-reused")
+
+        with (
+            patch.object(gateway.httpx, "AsyncClient", return_value=client),
+            patch.object(gateway, "store", store),
+            patch.object(gateway, "captcha_manager", fake_captcha),
+            patch.object(gateway, "_safe_refresh", no_refresh),
+        ):
+            response = await gateway._try_account(
+                "test",
+                account,
+                {"model": "glm-5.3", "stream": False, "messages": []},
+                {},
+                3000,
+                True,
+            )
+            chunks = [chunk async for chunk in response.body_iterator]
+
+        self.assertEqual(b"".join(chunks), b"event: message_stop\ndata: {}\n\n")
+        self.assertEqual(fake_captcha.solve_calls, 2)
+        self.assertEqual(fake_captcha.invalidate_calls, 1)
+        self.assertEqual(account.active_requests, 0)
+
     async def test_captcha_403_twice_switches_account(self) -> None:
         client = SequenceClient([
             FakeResponse(403, b'{"code":3007}', "application/json"),

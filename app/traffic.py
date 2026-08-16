@@ -16,16 +16,10 @@ _INPUT_RE = re.compile(r'"input_tokens"\s*:\s*(\d+)')
 _OUTPUT_RE = re.compile(r'"output_tokens"\s*:\s*(\d+)')
 
 
-def masked_account_name(account: Account | None) -> str | None:
+def account_display_name(account: Account | None) -> str | None:
     if account is None:
         return None
-    name = (account.name or account.id or "").strip()
-    if "@" in name:
-        local, domain = name.split("@", 1)
-        return f"{local[:3]}***@{domain}"
-    if len(name) > 10:
-        return f"{name[:4]}…{name[-3:]}"
-    return name
+    return (account.name or account.id or "").strip()
 
 
 class UsageTracker:
@@ -65,7 +59,7 @@ def record_request(
         model=str(meta.get("model") or "-"),
         protocol=str(meta.get("protocol") or "Anthropic"),
         account_id=account.id if account else None,
-        account_name=masked_account_name(account),
+        account_name=account_display_name(account),
         status_code=status_code,
         latency_ms=round((time.monotonic() - started) * 1000),
         input_tokens=usage.input_tokens if usage else None,

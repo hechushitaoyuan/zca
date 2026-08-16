@@ -248,7 +248,7 @@ async def _try_account(
                 text = (await resp.aread()).decode("utf-8", "ignore")
                 await cm.__aexit__(None, None, None)
                 await client.aclose()
-                failure = classify_upstream_failure(status_code, text)
+                failure = classify_upstream_failure(status_code, text) or FailureKind.UPSTREAM
 
                 if failure == FailureKind.CAPTCHA and needs_captcha:
                     if attempt + 1 < MAX_CAPTCHA_RETRIES:

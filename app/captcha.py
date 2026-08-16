@@ -3,8 +3,8 @@
 默认通过 Node + Playwright 在真实 Chromium 中运行阿里云官方 SDK，
 求得 verifyParam（X-Aliyun-Captcha-Verify-Param）。旧 jsdom 引擎仅保留为回退选项。
 
-- 缓存：求得的 verifyParam 在 TTL 内复用
-- 并发：同一时刻只跑一个求解进程（single-flight），其余请求等待后命中缓存
+- 独立消费：每个上游请求求得一个新的 verifyParam，绝不重复使用
+- 并发：同一时刻只跑一个求解进程，避免多个 Chromium 争用同一 profile
 - 重试：单次求解偶发失败时自动重试
 - 受控子进程：可配置超时；超时后 kill 并回收，避免僵尸进程
 - region：随配置接口返回，与求解结果一并交回网关，写入校验请求头
@@ -61,9 +61,6 @@ def _tail(raw: bytes | str | None, limit: int = DIAG_MAX_LEN) -> str:
 
 class CaptchaManager:
     def __init__(self) -> None:
-        self._cached: str | None = None
-        self._cached_region: str = _DEFAULT_REGION
-        self._cached_at: float = 0.0
         self._lock = asyncio.Lock()
         self._config_cache: dict | None = None
         self._config_cache_at: float = 0.0
@@ -95,24 +92,17 @@ class CaptchaManager:
 
     # ── 求解 ─────────────────────────────────────────────────────────────────
     async def get_verify_param(self, port: int | None = None) -> tuple[str, str]:
-        """返回 (verifyParam, region)。TTL 内复用缓存；并发 single-flight。"""
-        now = time.time() * 1000
-        if self._cached and now - self._cached_at < settings.CAPTCHA_CACHE_TTL:
-            return self._cached, self._cached_region
+        """返回本次请求专用的 (verifyParam, region)。
 
+        阿里云 V3 验证参数只能消费一次；复用会触发 F018/HTTP 400。锁仅用于
+        串行化求解器，因为所有 Chromium 实例共享同一个持久化 profile。
+        """
         async with self._lock:
-            # 二次检查：等锁期间可能已被其他请求填充
-            if self._cached and time.time() * 1000 - self._cached_at < settings.CAPTCHA_CACHE_TTL:
-                return self._cached, self._cached_region
-
             config = await self.fetch_config()
             region = config.get("region") or _DEFAULT_REGION
             if config.get("enabled") is False:
                 return "", region
             param = await self._solve(config)
-            self._cached = param
-            self._cached_region = region
-            self._cached_at = time.time() * 1000
             return param, region
 
     async def _solve(self, config: dict) -> str:
@@ -240,8 +230,7 @@ class CaptchaManager:
         return None
 
     def invalidate(self) -> None:
-        self._cached = None
-        self._cached_at = 0.0
+        """兼容调用点；verifyParam 不再缓存，因此无需额外失效。"""
 
     async def close(self) -> None:
         pass

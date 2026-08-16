@@ -379,8 +379,16 @@ class Store:
                     FROM {_REQUEST_LOGS}{where}""",
                 params,
             ).fetchone()
+        account_names = {account.id: account.name for account in self.list_accounts()}
+        items = []
+        for row in rows:
+            item = dict(row)
+            if item["account_id"] in account_names:
+                # 兼容升级前已经按脱敏名称写入的记录，展示时恢复当前完整名称。
+                item["account_name"] = account_names[item["account_id"]]
+            items.append(item)
         return {
-            "items": [dict(row) for row in rows],
+            "items": items,
             "stats": dict(stats) if stats else {"total": 0, "success": 0, "error": 0},
             "limit": limit,
             "offset": offset,

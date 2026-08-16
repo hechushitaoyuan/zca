@@ -205,33 +205,34 @@ return pool[idx]
 
 ---
 
-## 6. 无浏览器无痕验证
+## 6. Chromium 验证码
 
-Coding Plan(JWT)模式访问 `zcode.z.ai` 上游需携带阿里云无痕验证参数
-(请求头 `X-Aliyun-Captcha-Verify-Param`)。本项目**不启动真实浏览器**,而是:
+Coding Plan(JWT)模式访问 `zcode.z.ai` 上游需携带阿里云验证参数
+(请求头 `X-Aliyun-Captcha-Verify-Param`)。本项目在真实 Chromium 中运行官方 SDK:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant CM as Captcha Manager (Python)
     participant CFG as zcode.z.ai/client/configs
-    participant SV as Node Solver (jsdom)
+    participant SV as Node Solver (Chromium)
     participant CDN as o.alicdn.com
     participant ALI as 阿里云无痕服务
 
     CM->>CFG: GET 验证码配置（sceneId/region/prefix）
     CFG-->>CM: {sceneId, region, prefix}
     CM->>SV: spawn solver.js（子进程）
-    SV->>SV: 构造 jsdom，注入浏览器 API 桩<br/>(matchMedia/canvas/WebGL/Worker/OffscreenCanvas)
+    SV->>SV: 启动持久化 Chromium profile
     SV->>CDN: 加载 AliyunCaptcha.js
     SV->>ALI: initAliyunCaptcha + startTracelessVerification
     ALI-->>SV: success(verifyParam)
     SV-->>CM: stdout: VERIFY_PARAM=<param>
-    CM->>CM: 写缓存（CAPTCHA_CACHE_TTL，默认 45s）
+    CM->>CM: 交付本次请求专用参数
 ```
 
 - `verifyParam` 实为 `base64(JSON{certifyId, sceneId, isSign, securityToken})`,由阿里云服务端签发。
-- **缓存**:TTL 内复用;**并发去重**:同一时刻仅跑一个求解进程(`asyncio.Lock`);
+- `verifyParam` 是一次性参数，禁止跨请求复用；F018/HTTP 400 表示参数被重复消费。
+- **串行求解**:同一时刻仅跑一个求解进程(`asyncio.Lock`)，避免多个 Chromium 争用 profile；
   **重试**:`CAPTCHA_SOLVE_RETRIES`(默认 4)次。
 - 仅 zai + JWT 账号需要;API Key 账号走 `api.z.ai` 回退端点,无需验证码。
 
@@ -267,7 +268,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 
 所有可调参数集中在 `app/settings.py`,均可由环境变量覆盖(见 `README.md` 的环境变量表)。
 要点:`ZCODE_PORT`、`ZCODE_DATA_DIR`、`ZCODE_QUOTA_REFRESH_INTERVAL`、`ZCODE_COOLING_SECONDS`、
-`ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CACHE_TTL`。
+`ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CONFIG_CACHE_TTL`。
 
 ---
 

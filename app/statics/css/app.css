@@ -218,17 +218,22 @@ tr:hover td{background:#fdfdfd}
 .traffic-icon-btn:hover{background:#f5f5f5;color:#444}
 .traffic-icon-btn svg{width:15px;height:15px;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;fill:none}
 .traffic-clear{color:#a3a3a3}
-.traffic-table-wrap{height:min(62vh,650px);min-height:360px;overflow:auto}
-.traffic-table{width:100%;min-width:1050px;border-collapse:separate;border-spacing:0}
+.traffic-table-wrap{height:calc(100vh - 270px);min-height:640px;max-height:1050px;overflow:auto}
+.traffic-table{width:100%;min-width:1050px;table-layout:fixed;border-collapse:separate;border-spacing:0}
 .traffic-table thead{position:sticky;top:0;z-index:2}
 .traffic-table th{background:#f8f9fa;color:#7c838c;font-size:11px;font-weight:600;border-bottom:1px solid #eee;padding:9px 10px}
 .traffic-table td{padding:8px 10px;font-size:11px;border-bottom:1px solid #f2f2f2;white-space:nowrap;color:#535a62}
+.traffic-table th:nth-child(1){width:58px}.traffic-table th:nth-child(2){width:55px}
+.traffic-table th:nth-child(3){width:95px}.traffic-table th:nth-child(4){width:88px}
+.traffic-table th:nth-child(5){width:205px}.traffic-table th:nth-child(7){width:90px}
+.traffic-table th:nth-child(8){width:72px}.traffic-table th:nth-child(9){width:82px}
+.traffic-table td:nth-child(5){white-space:normal;overflow-wrap:anywhere;line-height:1.35}
 .traffic-status{display:inline-flex;min-width:34px;height:20px;align-items:center;justify-content:center;border-radius:999px;color:#fff;font-size:10px;font-weight:700;font-family:ui-monospace,monospace}
 .traffic-status.ok{background:#10b981}.traffic-status.bad{background:#fb6178}
 .traffic-method{font-weight:600;color:#555!important}
 .traffic-model{font-family:ui-monospace,monospace;color:#2563eb!important}
 .traffic-protocol{display:inline-flex;height:20px;align-items:center;padding:0 7px;border-radius:999px;background:#13b866;color:#fff;font-size:10px;font-weight:600}
-.traffic-path{font-family:ui-monospace,monospace;color:#667085!important}
+.traffic-path{font-family:ui-monospace,monospace;color:#667085!important;overflow:hidden;text-overflow:ellipsis}
 .token-lines{font-size:10px;line-height:1.45;color:#59616c}
 .traffic-pagination{height:46px;padding:0 14px;display:flex;align-items:center;justify-content:space-between;color:#777;font-size:11px;border-top:1px solid #eee}
 .traffic-pagination>div{display:flex;align-items:center;gap:14px}
@@ -247,6 +252,7 @@ tr:hover td{background:#fdfdfd}
   .settings-inline-card{grid-template-columns:1fr}
   .traffic-search-wrap{min-width:100%}
   .traffic-summary{order:5;width:100%}
+  .traffic-table-wrap{height:calc(100vh - 330px);min-height:420px}
 }
 
 @media (min-width:721px) and (max-width:1080px){
