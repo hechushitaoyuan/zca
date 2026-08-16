@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import os
+import platform as runtime_platform
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -54,17 +56,47 @@ GATEWAY_KEY = (os.getenv("ZCODE_GATEWAY_KEY", "") or "").strip()
 CAPTCHA_CACHE_TTL = _int("CAPTCHA_CACHE_TTL", 45_000)          # ms
 CAPTCHA_CONFIG_CACHE_TTL = _int("CAPTCHA_CONFIG_CACHE_TTL", 600_000)  # ms
 
-# 验证码求解（无浏览器：Node + jsdom 模拟浏览器环境，运行阿里云无痕 SDK）
+# 验证码求解（默认 Node + 真实 Chromium；可显式切回旧 jsdom 引擎）
 NODE_PATH = os.getenv("ZCODE_NODE_PATH", "node")
 CAPTCHA_SOLVER_DIR = ROOT_DIR / "captcha_node"
-CAPTCHA_SOLVER_JS = CAPTCHA_SOLVER_DIR / "solver.js"
+CAPTCHA_ENGINE = (os.getenv("ZCODE_CAPTCHA_ENGINE", "browser") or "browser").strip().lower()
+CAPTCHA_SOLVER_JS = CAPTCHA_SOLVER_DIR / (
+    "browser_solver.js" if CAPTCHA_ENGINE == "browser" else "solver.js"
+)
 CAPTCHA_SOLVE_RETRIES = _int("ZCODE_CAPTCHA_RETRIES", 4)
-CAPTCHA_SOLVE_TIMEOUT = _int("ZCODE_CAPTCHA_TIMEOUT", 40)  # 每次求解超时（秒）
+CAPTCHA_SOLVE_TIMEOUT = _int("ZCODE_CAPTCHA_TIMEOUT", 150)  # 含人工验证等待时间（秒）
+CHROMIUM_PATH = os.getenv("ZCODE_CHROMIUM_PATH", "/usr/bin/chromium")
+CHROMIUM_PROFILE_DIR = _resolve_path(
+    "ZCODE_CHROMIUM_PROFILE_DIR", str(DATA_DIR / "chromium-profile")
+)
+CAPTCHA_BROWSER_HEADLESS = os.getenv("ZCODE_CAPTCHA_BROWSER_HEADLESS", "0") == "1"
+CAPTCHA_BROWSER_TIMEOUT = _int("ZCODE_CAPTCHA_BROWSER_TIMEOUT", 120_000)
 
 # ── ZCode client identity ────────────────────────────────────────────────────
-ZCODE_CLIENT_VERSION = os.getenv("ZCODE_CLIENT_VERSION", "3.1.2")
-ZCODE_SOURCE_TITLE = os.getenv("ZCODE_SOURCE_TITLE", "cli")
+def _runtime_arch() -> str:
+    raw = runtime_platform.machine().lower()
+    return {"aarch64": "arm64", "arm64": "arm64", "x86_64": "x64", "amd64": "x64"}.get(raw, raw)
+
+
+def _runtime_platform() -> str:
+    if sys.platform == "darwin":
+        return "darwin"
+    if sys.platform == "win32":
+        return "win32"
+    return "linux"
+
+
+ZCODE_CLIENT_VERSION = os.getenv("ZCODE_CLIENT_VERSION", "3.7.7")
+ZCODE_SOURCE_TITLE = os.getenv("ZCODE_SOURCE_TITLE", "electron")
 ZCODE_REFERER = os.getenv("ZCODE_REFERER", "https://zcode.z.ai")
+ZCODE_IDENTITY_PLATFORM = os.getenv("ZCODE_IDENTITY_PLATFORM", _runtime_platform())
+ZCODE_IDENTITY_ARCH = os.getenv("ZCODE_IDENTITY_ARCH", _runtime_arch())
+ZCODE_IDENTITY_RELEASE = os.getenv("ZCODE_IDENTITY_RELEASE", runtime_platform.release())
+ZCODE_RELEASE_CHANNEL = (os.getenv("ZCODE_IDENTITY_RELEASE_CHANNEL", "") or "").strip()
+ZCODE_CLIENT_LANGUAGE = os.getenv("ZCODE_IDENTITY_CLIENT_LANGUAGE", "zh-CN")
+ZCODE_CLIENT_TIMEZONE = os.getenv("ZCODE_IDENTITY_CLIENT_TIMEZONE", "Asia/Shanghai")
+ZCODE_DEVICE_MID = (os.getenv("ZCODE_IDENTITY_DEVICE_MID", "") or "").strip()
+ZCODE_PLATFORM_ID = f"{ZCODE_IDENTITY_PLATFORM}-{ZCODE_IDENTITY_ARCH}"
 
 # ── 用量监控 ─────────────────────────────────────────────────────────────────
 # 后台自动刷新账号额度的间隔（秒）。0 表示关闭后台轮询，仅按需刷新。

@@ -10,6 +10,8 @@ services:
       # 公网直连需在 .env 设 ZCA_BIND_IP=0.0.0.0，且必须先配置非空强
       # ZCODE_ADMIN_KEY 与 ZCODE_GATEWAY_KEY 并确认云防火墙范围（见 docs/DEPLOYMENT.md）。
       - "${ZCA_BIND_IP:-127.0.0.1}:8047:3000"
+      # 人工验证码桌面只绑定宿主机回环；请勿改为公网监听。
+      - "127.0.0.1:${ZCA_NOVNC_PORT:-6080}:6080"
     volumes:
       - ./data:/data
     env_file:

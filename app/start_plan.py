@@ -13,10 +13,12 @@ with _SYSTEM_BLOCKS_PATH.open("r", encoding="utf-8") as _stream:
     ZCODE_SYSTEM_BLOCKS: list[dict[str, Any]] = json.load(_stream)
 
 MODEL_NAME_MAP = {
+    "glm-5.3": "GLM-5.3",
     "glm-5.2": "GLM-5.2",
     "glm-5-turbo": "GLM-5-Turbo",
     "glm-turbo": "GLM-5-Turbo",
     "glm-5.1": "GLM-5.1",
+    "glm-5": "GLM-5",
     "glm-4.7": "GLM-4.7",
 }
 
@@ -74,10 +76,7 @@ def _apply_cache_control(messages: object) -> None:
 
 
 def prepare_start_plan_body(body: dict, user_id: str | None = None) -> dict:
-    """Return a transformed copy suitable for the ZCode Start Plan endpoint.
-
-    The client's ``stream`` value is deliberately left unchanged.
-    """
+    """Return a transformed copy for the current ZCode Start Plan endpoint."""
     prepared = copy.deepcopy(body)
     model = prepared.get("model")
     if isinstance(model, str):
@@ -89,8 +88,23 @@ def prepare_start_plan_body(body: dict, user_id: str | None = None) -> dict:
         and raw_system[: len(ZCODE_SYSTEM_BLOCKS)] == ZCODE_SYSTEM_BLOCKS
     ):
         raw_system = raw_system[len(ZCODE_SYSTEM_BLOCKS) :]
+        if (
+            raw_system
+            and isinstance(raw_system[0], dict)
+            and str(raw_system[0].get("text", "")).startswith("- You are powered by the model named ")
+        ):
+            raw_system = raw_system[1:]
     user_blocks = _normalize_user_system(raw_system)
-    prepared["system"] = copy.deepcopy(ZCODE_SYSTEM_BLOCKS) + user_blocks
+    official = copy.deepcopy(ZCODE_SYSTEM_BLOCKS)
+    if isinstance(prepared.get("model"), str) and prepared["model"].strip():
+        official.append(
+            {
+                "type": "text",
+                "text": f"- You are powered by the model named {prepared['model']}.",
+                "cache_control": {"type": "ephemeral"},
+            }
+        )
+    prepared["system"] = official + user_blocks
 
     _apply_cache_control(prepared.get("messages"))
 

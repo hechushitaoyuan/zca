@@ -1,7 +1,7 @@
-"""验证码求解（无浏览器）。
+"""ZCode 验证码管理。
 
-通过 Node + jsdom 在模拟浏览器环境中运行阿里云无痕 SDK，
-求得 verifyParam（X-Aliyun-Captcha-Verify-Param）。不再启动真实浏览器。
+默认通过 Node + Playwright 在真实 Chromium 中运行阿里云官方 SDK，
+求得 verifyParam（X-Aliyun-Captcha-Verify-Param）。旧 jsdom 引擎仅保留为回退选项。
 
 - 缓存：求得的 verifyParam 在 TTL 内复用
 - 并发：同一时刻只跑一个求解进程（single-flight），其余请求等待后命中缓存
@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 
 import httpx
@@ -45,6 +46,10 @@ class SolverOutputError(SolverError):
     """输出缺少标记 / 格式错误 / verifyParam 过短。"""
 
 
+class InteractiveCaptchaRequired(SolverError):
+    """真实浏览器要求用户完成交互式验证。"""
+
+
 def _tail(raw: bytes | str | None, limit: int = DIAG_MAX_LEN) -> str:
     """把诊断输出压成单行并限长；绝不用于承载 verifyParam。"""
     if not raw:
@@ -71,8 +76,11 @@ class CaptchaManager:
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 res = await client.get(
-                    "https://zcode.z.ai/api/v1/client/configs"
-                    "?app_version=3.0.0&platform=win32"
+                    "https://zcode.z.ai/api/v1/client/configs",
+                    params={
+                        "app_version": settings.ZCODE_CLIENT_VERSION,
+                        "platform": settings.ZCODE_PLATFORM_ID,
+                    },
                 )
             res.raise_for_status()
             captcha = ((res.json().get("data") or {}).get("configs") or {}).get("captcha")
@@ -81,13 +89,9 @@ class CaptchaManager:
                 self._config_cache_at = now
                 return captcha
         except (httpx.HTTPError, ValueError) as err:
-            logs.warn("captcha", f"获取配置失败，使用默认: {err}")
-        return {
-            "enabled": True,
-            "prefix": _DEFAULT_PREFIX,
-            "region": _DEFAULT_REGION,
-            "sceneId": _DEFAULT_SCENE,
-        }
+            logs.warn("captcha", f"获取当前 ZCode 验证配置失败: {err}")
+            raise SolverError("无法获取当前 ZCode 验证配置") from err
+        raise SolverError("当前 ZCode 验证配置缺少 captcha 字段")
 
     # ── 求解 ─────────────────────────────────────────────────────────────────
     async def get_verify_param(self, port: int | None = None) -> tuple[str, str]:
@@ -103,6 +107,8 @@ class CaptchaManager:
 
             config = await self.fetch_config()
             region = config.get("region") or _DEFAULT_REGION
+            if config.get("enabled") is False:
+                return "", region
             param = await self._solve(config)
             self._cached = param
             self._cached_region = region
@@ -118,6 +124,9 @@ class CaptchaManager:
         for attempt in range(1, settings.CAPTCHA_SOLVE_RETRIES + 1):
             try:
                 param = await self._run_solver(scene, region, prefix)
+            except InteractiveCaptchaRequired:
+                # 重试不会把交互式挑战变成无痕通过，保留具体异常给网关返回 409。
+                raise
             except SolverError as err:
                 last_err = err
                 logs.warn(
@@ -165,6 +174,8 @@ class CaptchaManager:
 
         returncode = proc.returncode
         if returncode != 0:
+            if returncode == 6:
+                raise InteractiveCaptchaRequired("需要在同一 VPS 浏览器环境中完成人机验证")
             raise SolverExitError(
                 f"求解器非零退出（code={returncode}）{_tail(stderr)}".strip()
             )
@@ -181,11 +192,22 @@ class CaptchaManager:
 
     async def _create_subprocess(self, argv: list[str]):
         """创建求解子进程。独立成方法，便于测试 patch / 计数 / 捕获参数。"""
+        env = os.environ.copy()
+        env.setdefault("ZCODE_CHROMIUM_PATH", settings.CHROMIUM_PATH)
+        env.setdefault("ZCODE_CHROMIUM_PROFILE_DIR", str(settings.CHROMIUM_PROFILE_DIR))
+        env.setdefault(
+            "ZCODE_CAPTCHA_BROWSER_HEADLESS",
+            "1" if settings.CAPTCHA_BROWSER_HEADLESS else "0",
+        )
+        env.setdefault(
+            "ZCODE_CAPTCHA_BROWSER_TIMEOUT", str(settings.CAPTCHA_BROWSER_TIMEOUT)
+        )
         return await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(settings.CAPTCHA_SOLVER_DIR),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=env,
         )
 
     @staticmethod

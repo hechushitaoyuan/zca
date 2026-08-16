@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from .. import logs, settings
 from ..agent import build_request
 from ..auth_admin import verify_gateway_key
-from ..captcha import captcha_manager
+from ..captcha import InteractiveCaptchaRequired, captcha_manager
 from ..models import Account, FailureKind, Status
 from ..quota import fetch_quota
 from ..store import store
@@ -31,15 +31,17 @@ MAX_ACCOUNT_ATTEMPTS = 5
 
 # Z.AI 上游模型名大小写敏感
 MODEL_NAME_MAP = {
+    "glm-5.3": "GLM-5.3",
     "glm-5.2": "GLM-5.2",
     "glm-5-turbo": "GLM-5-Turbo",
     "glm-turbo": "GLM-5-Turbo",
     "glm-5.1": "GLM-5.1",
+    "glm-5": "GLM-5",
     "glm-4.7": "GLM-4.7",
 }
 
 # /v1/models 对外公布的可用模型
-AVAILABLE_MODELS = ["GLM-5.2", "GLM-5-Turbo"]
+AVAILABLE_MODELS = ["GLM-5.3", "GLM-5.2", "GLM-5-Turbo"]
 
 def _detect_provider(body: dict, headers) -> str:
     model = body.get("model") or ""
@@ -143,6 +145,17 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
             if needs_captcha:
                 try:
                     verify_param, verify_region = await captcha_manager.get_verify_param(port)
+                except InteractiveCaptchaRequired as err:
+                    logs.req_err(req_id, f"需要交互式人机校验: {err}")
+                    return JSONResponse(
+                        {
+                            "error": {
+                                "message": "当前风控要求在 VPS 浏览器中完成人机验证",
+                                "type": "captcha_interactive_required",
+                            }
+                        },
+                        status_code=409,
+                    )
                 except Exception as err:  # noqa: BLE001
                     logs.req_err(req_id, f"人机校验失败: {err}")
                     return JSONResponse(
@@ -267,7 +280,10 @@ async def _try_account(req_id, account, body, incoming_headers, port, needs_capt
             out_headers = {"Cache-Control": "no-cache"}
             stream_owns_reservation = True
             return StreamingResponse(
-                _body_iter(), status_code=status_code, media_type=content_type, headers=out_headers
+                _body_iter(),
+                status_code=status_code,
+                media_type=content_type,
+                headers=out_headers,
             )
 
         logs.warn(req_id, f"账号 {account.name} 验证码连续失败，切换下一个")

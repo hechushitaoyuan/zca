@@ -7,6 +7,7 @@ from unittest.mock import patch
 from app import captcha
 from app.captcha import (
     CaptchaManager,
+    InteractiveCaptchaRequired,
     SolverError,
     SolverExitError,
     SolverOutputError,
@@ -133,6 +134,16 @@ class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
                 await mgr.get_verify_param()
         # 退出码可见，但不应回显完整 stderr 之外的敏感参数
         self.assertIn("code=5", str(ctx.exception))
+
+    async def test_interactive_exit_is_not_retried_or_wrapped(self) -> None:
+        recorder = SpawnRecorder(
+            lambda: FakeProc(stdout=b"", stderr=b"interactive", returncode=6)
+        )
+        mgr = make_manager(recorder)
+        with patch.object(captcha.settings, "CAPTCHA_SOLVE_RETRIES", 4):
+            with self.assertRaises(InteractiveCaptchaRequired):
+                await mgr.get_verify_param()
+        self.assertEqual(len(recorder.calls), 1)
 
     async def test_missing_marker_fails(self) -> None:
         recorder = SpawnRecorder(

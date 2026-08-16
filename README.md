@@ -7,7 +7,14 @@
 在上游基础上，本项目由Codex指导新增了免费 JWT 多账号公平轮询、单账号并发限制、额度均衡分担、
 3012 风控账号指数冷却、验证码 single-flight 缓存、失败状态区分和真正的 SSE 流式转发。
 
-## ## 致谢
+## 当前兼容性
+
+- ZCode 客户端身份与 Start Plan 请求已同步到 3.7.7。
+- Dockerfile 原生支持 `linux/amd64` 与 `linux/arm64`，验证码由真实 Chromium 运行官方 SDK。
+- 风控要求点选或滑块时，可通过仅绑定回环地址的 noVNC 桌面人工完成，详见
+  [部署文档](docs/DEPLOYMENT.md#31-交互式验证码仅风控触发时)。
+
+## 致谢
 
 - [liu5269/zcode2api](https://github.com/liu5269/zcode2api)：本项目的 Python 主体、管理界面与账号池基础。
 - [TriDefender/zcode-api](https://github.com/TriDefender/zcode-api)：Start Plan JWT 与阿里云验证码求解技术来源。
