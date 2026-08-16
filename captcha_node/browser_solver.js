@@ -54,8 +54,17 @@ async function main() {
       headless: HEADLESS,
       locale: 'zh-CN',
       timezoneId: 'Asia/Shanghai',
-      viewport: { width: 1280, height: 800 },
-      args: ['--no-sandbox', '--disable-dev-shm-usage'],
+      // Keep the *outer* Chromium window inside the 1280x800 Xvfb desktop.
+      // A 1280x800 Playwright viewport makes the browser chrome grow beyond
+      // the framebuffer, which clips the page and makes remote pointer input
+      // unnecessarily difficult during a manual challenge.
+      noViewport: true,
+      args: [
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--window-position=0,0',
+        '--window-size=1280,800',
+      ],
     });
 
     const page = context.pages()[0] || (await context.newPage());

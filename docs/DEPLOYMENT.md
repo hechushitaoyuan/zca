@@ -70,9 +70,21 @@ docker compose logs --tail=100 zca
 ssh -L 6080:127.0.0.1:6080 <VPS用户>@<VPS地址>
 ```
 
-随后打开 `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=scale`。先保持该页面打开，
+随后打开 `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=remote`。先保持该页面打开，
 再发起一次 `/v1/messages` 请求；挑战出现后在 120 秒内人工完成。验证码桌面没有独立密码，
 安全性依赖 SSH 隧道，因此 **6080 必须保持回环绑定，禁止暴露到公网**。
+
+如果 VPS 与操作电脑位于同一个受控 Tailscale 网络，也可在 VPS 的 `.env` 设置：
+
+```ini
+ZCA_NOVNC_BIND_IP=<VPS 的 Tailscale IPv4>
+ZCA_NOVNC_PORT=6080
+```
+
+重新执行 `docker compose up -d` 后，使用
+`http://<Tailscale-IP>:6080/vnc.html?autoconnect=1&resize=remote` 访问。`resize=remote` 能保持
+远程桌面与鼠标坐标一致，适合人工拖动验证；同时保持浏览器缩放为 100%。该地址只应绑定明确的
+Tailscale IP，禁止设置为 `0.0.0.0`；同一 Tailnet 内的访问范围由 Tailscale ACL 控制。
 
 日志脱敏检查：确认日志中 **不出现** 完整 JWT、API Key、verifyParam、后台密码等敏感串。
 `/health` 与 `/meta` 仅返回 `status/version/commit`，不含账号、配置或凭据。
