@@ -96,9 +96,10 @@ graph TD
 | Account Model | `app/models.py` | `Account` 数据类、`Status` 状态、可选中判定、脱敏视图 |
 | Request Builder | `app/agent.py` | 按凭证选上游端点、组装请求头(含 `X-Aliyun-Captcha-Verify-Param`) |
 | Quota Monitor | `app/quota.py` | 单账号额度查询 + 状态判定 + 后台周期刷新任务 |
-| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、缓存/并发去重/重试 |
-| Captcha Solver | `captcha_node/solver.js` | jsdom 模拟浏览器跑阿里云无痕 SDK,输出 `verifyParam` |
-| OAuth Flow | `app/oauth.py` | Z.AI OAuth:init → poll → 兑换 API Key |
+| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、一次性参数/串行/重试 |
+| Captcha Solver | `captcha_node/browser_solver.js` | 真实 Chromium 跑阿里云官方 SDK，输出 `verifyParam` |
+| OAuth Flow | `app/oauth.py` | ZCode 3.7.7 authorize → 深链接回调捕获 → token 兑换 |
+| OAuth Browser | `captcha_node/oauth_login.js` | 独立 Xvfb Chromium 中人工网页登录；只输出一次性授权码 |
 | Settings | `app/settings.py` | 环境变量 / 默认值 / 路径 / 上游端点 |
 | Logs | `app/logs.py` | 彩色终端日志(banner / req / req_ok / req_err …) |
 
@@ -268,7 +269,8 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 
 所有可调参数集中在 `app/settings.py`,均可由环境变量覆盖(见 `README.md` 的环境变量表)。
 要点:`ZCODE_PORT`、`ZCODE_DATA_DIR`、`ZCODE_QUOTA_REFRESH_INTERVAL`、`ZCODE_COOLING_SECONDS`、
-`ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CONFIG_CACHE_TTL`。
+`ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CONFIG_CACHE_TTL`、
+`ZCODE_OAUTH_BROWSER_TIMEOUT`、`ZCODE_OAUTH_TIMEOUT`、`ZCODE_OAUTH_NOVNC_URL`。
 
 ---
 
@@ -288,7 +290,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 │   ├── logs.py            # 彩色日志
 │   ├── routes/            # gateway / admin_api / pages
 │   └── statics/           # css / js / admin/*.html
-├── captcha_node/          # Captcha Solver（Node + jsdom，solver.js）
+├── captcha_node/          # Chromium 验证码求解器 + OAuth 人工授权浏览器
 ├── main.py                # CLI 入口
 ├── data/                  # 运行时生成：accounts.db
 └── docs/ARCHITECTURE.md   # 本文件

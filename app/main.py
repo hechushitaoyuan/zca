@@ -41,6 +41,7 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await monitor.stop()
+        await admin_api.shutdown_login_flows()
         await captcha_manager.close()
 
 

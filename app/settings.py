@@ -71,6 +71,35 @@ CHROMIUM_PROFILE_DIR = _resolve_path(
 CAPTCHA_BROWSER_HEADLESS = os.getenv("ZCODE_CAPTCHA_BROWSER_HEADLESS", "0") == "1"
 CAPTCHA_BROWSER_TIMEOUT = _int("ZCODE_CAPTCHA_BROWSER_TIMEOUT", 120_000)
 
+# Z.ai OAuth 3.7.7：官方网页授权在独立 Xvfb/noVNC 桌面运行，避免与验证码窗口争用。
+OAUTH_BROWSER_JS = CAPTCHA_SOLVER_DIR / "oauth_login.js"
+OAUTH_DISPLAY = os.getenv("ZCODE_OAUTH_DISPLAY", ":100")
+OAUTH_BROWSER_TIMEOUT = _int("ZCODE_OAUTH_BROWSER_TIMEOUT", 600_000)  # ms
+OAUTH_FLOW_TIMEOUT = _int("ZCODE_OAUTH_TIMEOUT", 630)  # seconds
+OAUTH_AUTHORIZE_URL = os.getenv(
+    "ZCODE_OAUTH_AUTHORIZE_URL", "https://chat.z.ai/api/oauth/authorize"
+)
+OAUTH_TOKEN_URL = os.getenv(
+    "ZCODE_OAUTH_TOKEN_URL", "https://zcode.z.ai/api/v1/oauth/token"
+)
+OAUTH_USERINFO_URL = os.getenv(
+    "ZCODE_OAUTH_USERINFO_URL", "https://chat.z.ai/api/oauth/userinfo"
+)
+OAUTH_BRIDGE_URL = os.getenv(
+    "ZCODE_OAUTH_BRIDGE_URL", "https://zcode.z.ai/app/oauth/login"
+)
+OAUTH_CLIENT_ID = os.getenv(
+    "ZCODE_OAUTH_CLIENT_ID", "client_P8X5CMWmlaRO9gyO-KSqtg"
+)
+_novnc_host = (os.getenv("ZCA_NOVNC_BIND_IP", "127.0.0.1") or "127.0.0.1").strip()
+if _novnc_host in ("", "0.0.0.0", "::"):
+    _novnc_host = "127.0.0.1"
+_oauth_novnc_port = _int("ZCA_OAUTH_NOVNC_PORT", 6081)
+OAUTH_NOVNC_URL = (
+    os.getenv("ZCODE_OAUTH_NOVNC_URL", "").strip()
+    or f"http://{_novnc_host}:{_oauth_novnc_port}/vnc.html?autoconnect=1&resize=remote"
+)
+
 # ── ZCode client identity ────────────────────────────────────────────────────
 def _runtime_arch() -> str:
     raw = runtime_platform.machine().lower()

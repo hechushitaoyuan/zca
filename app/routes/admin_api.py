@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
+from dataclasses import dataclass
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
@@ -15,7 +17,7 @@ from ..agent import build_request
 from ..auth_admin import verify_admin_key
 from ..captcha import InteractiveCaptchaRequired, captcha_manager
 from ..models import PROVIDERS, FailureKind, Status
-from ..oauth import ZaiAuthFlow
+from ..oauth import OAuthError, ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
 from ..store import store
 from ..traffic import UsageTracker, record_request
@@ -23,8 +25,17 @@ from ..upstream_errors import classify_upstream_failure
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(verify_admin_key)])
 
-# 进行中的 OAuth 登录流程（flow_id -> ZaiAuthFlow），需跨请求保留 poll_token
-_login_flows: dict[str, ZaiAuthFlow] = {}
+@dataclass
+class _LoginSession:
+    flow: ZaiAuthFlow
+    task: asyncio.Task | None = None
+    status: str = "pending"
+    message: str = ""
+    account: dict | None = None
+
+
+# OAuth 授权使用一个独立可见浏览器桌面，同一时刻只允许一个人工登录流程。
+_login_flows: dict[str, _LoginSession] = {}
 _TEST_MODELS = {"GLM-5.3", "GLM-5.2", "GLM-5-Turbo"}
 
 
@@ -311,61 +322,96 @@ async def clear_request_logs():
     return {"deleted": store.clear_request_logs()}
 
 
-# ── OAuth 登录（Z.AI）────────────────────────────────────────────────────────
+# ── OAuth 登录（Z.AI 3.7.7 authorization-code flow）────────────────────────
+async def _complete_login(flow_id: str) -> None:
+    session = _login_flows.get(flow_id)
+    if session is None:
+        return
+    try:
+        result = await session.flow.run()
+        token = str(result.get("token") or "").strip()
+        if not token:
+            raise OAuthError("授权结果缺少 ZCode JWT")
+        account = store.add_account(
+            "zai",
+            session.flow.account_name(result),
+            token,
+        )
+        try:
+            await refresh_accounts([account])
+        except Exception:  # noqa: BLE001 - 额度失败不应撤销已成功的授权
+            pass
+        session.account = account.public_view()
+        session.status = "ready"
+    except asyncio.CancelledError:
+        session.status = "cancelled"
+        session.message = "授权已取消"
+        raise
+    except OAuthError as err:
+        session.status = "failed"
+        session.message = str(err)
+    except Exception:  # noqa: BLE001 - 不向前端泄漏未知异常或凭据
+        session.status = "failed"
+        session.message = "授权登录失败，请重新尝试"
+
+
 @router.post("/login/start")
 async def login_start():
-    """发起 Z.AI OAuth，返回授权链接供前端展示。"""
+    """在独立 VPS Chromium 中发起官方 Z.AI 网页授权。"""
+    for flow_id, session in list(_login_flows.items()):
+        if session.status != "pending":
+            _login_flows.pop(flow_id, None)
+    if any(session.status == "pending" for session in _login_flows.values()):
+        raise HTTPException(409, "已有授权登录正在进行，请先完成或取消")
+
     flow = ZaiAuthFlow()
-    try:
-        flow_id, authorize_url = await flow.init()
-    except Exception as err:  # noqa: BLE001
-        raise HTTPException(502, f"登录初始化失败: {err}")
-    _login_flows[flow_id] = flow
-    return {"flow_id": flow_id, "authorize_url": authorize_url}
+    flow_id, _authorize_url = await flow.init()
+    session = _LoginSession(flow=flow)
+    _login_flows[flow_id] = session
+    session.task = asyncio.create_task(_complete_login(flow_id))
+    return {
+        "flow_id": flow_id,
+        "novnc_url": settings.OAUTH_NOVNC_URL,
+        "expires_in": settings.OAUTH_BROWSER_TIMEOUT // 1000,
+    }
 
 
 @router.get("/login/poll/{flow_id}")
 async def login_poll(flow_id: str):
-    """轮询授权状态；成功后自动兑换凭证并加入账号池。"""
-    flow = _login_flows.get(flow_id)
-    if not flow:
+    """轮询独立授权浏览器状态。"""
+    session = _login_flows.get(flow_id)
+    if not session:
         raise HTTPException(404, "登录会话不存在或已过期")
-    try:
-        data = await flow.poll(flow_id)
-    except Exception:  # noqa: BLE001 - 单次网络抖动按 pending 处理
+    if session.status == "pending":
         return {"status": "pending"}
-
-    state = data.get("status")
-    if state == "failed":
-        _login_flows.pop(flow_id, None)
-        return {"status": "failed"}
-    if state != "ready":
-        return {"status": "pending"}
-
-    # 授权成功：保存 Coding Plan JWT，并尝试兑换 API Key 作为同账号回退
-    zcode_jwt = data.get("token")
-    access_token = (data.get("zai") or {}).get("access_token")
-    account = None
-    if zcode_jwt:
-        account = store.add_account("zai", "oauth-login", zcode_jwt)
-    if access_token:
-        try:
-            api_key = await flow.exchange_api_key(access_token)
-            if account is not None:
-                account.api_key = api_key
-                store.update_account(account)
-            else:
-                account = store.add_account("zai", "oauth-login", api_key)
-        except Exception:  # noqa: BLE001 - 兑换失败不影响 JWT 已入池
-            pass
-
+    result = {
+        "status": session.status,
+        **({"message": session.message} if session.message else {}),
+        **({"account": session.account} if session.account else {}),
+    }
     _login_flows.pop(flow_id, None)
-    if account is None:
-        return {"status": "failed", "message": "未能从授权结果中获取凭证"}
+    return result
 
-    if account.mode == "jwt":
-        await refresh_accounts([account])
-    return {"status": "ready", "account": account.public_view()}
+
+@router.delete("/login/{flow_id}")
+async def login_cancel(flow_id: str):
+    session = _login_flows.pop(flow_id, None)
+    if session is None:
+        return {"ok": True}
+    if session.task and not session.task.done():
+        session.task.cancel()
+        await asyncio.gather(session.task, return_exceptions=True)
+    return {"ok": True}
+
+
+async def shutdown_login_flows() -> None:
+    sessions = list(_login_flows.values())
+    _login_flows.clear()
+    tasks = [session.task for session in sessions if session.task and not session.task.done()]
+    for task in tasks:
+        task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ── 设置 ─────────────────────────────────────────────────────────────────────

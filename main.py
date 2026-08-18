@@ -60,48 +60,21 @@ async def cmd_login(args: list[str]) -> None:
         print(c("目前仅支持: python cli.py login zai", "red"))
         return
     flow = ZaiAuthFlow()
-    try:
-        flow_id, authorize_url = await flow.init()
-    except Exception as err:  # noqa: BLE001
-        print(c(f"❌ 登录初始化失败: {err}", "red"))
-        return
-
-    print(c("\n✔ OAuth 初始化成功！请在浏览器中打开下面链接完成授权：", "green"))
-    print(c(authorize_url, "blue"))
-
-    if "--no-browser" not in args:
-        try:
-            import webbrowser
-            webbrowser.open(authorize_url)
-        except Exception:  # noqa: BLE001
-            pass
-
+    await flow.init()
+    print(c("\n✔ OAuth 浏览器已启动，请打开独立授权桌面：", "green"))
+    print(c(settings.OAUTH_NOVNC_URL, "blue"))
     print("正在等待授权...")
-    for _ in range(100):
-        await asyncio.sleep(2)
-        try:
-            data = await flow.poll(flow_id)
-        except Exception:  # noqa: BLE001
-            continue
-        status = data.get("status")
-        if status == "ready":
-            access_token = (data.get("zai") or {}).get("access_token")
-            zcode_jwt = data.get("token")
-            if zcode_jwt:
-                acc = store.add_account("zai", "oauth-login", zcode_jwt)
-                print(c(f"\n✔ 已保存 Coding Plan JWT 账号: {acc.name} ({acc.id})", "green"))
-            if access_token:
-                try:
-                    key = await flow.exchange_api_key(access_token)
-                    store.add_account("zai", "oauth-apikey", key)
-                    print(c(f"✔ 已兑换并保存 API Key: {key[:8]}...", "green"))
-                except Exception as err:  # noqa: BLE001
-                    print(c(f"⚠️ 兑换 API Key 失败: {err}", "yellow"))
-            return
-        if status == "failed":
-            print(c("❌ 授权失败或被拒绝。", "red"))
-            return
-    print(c("❌ 登录超时，请重试。", "red"))
+    try:
+        data = await flow.run()
+    except Exception as err:  # noqa: BLE001
+        print(c(f"❌ 授权失败: {err}", "red"))
+        return
+    zcode_jwt = data.get("token")
+    if not zcode_jwt:
+        print(c("❌ 授权结果缺少 Coding Plan JWT。", "red"))
+        return
+    acc = store.add_account("zai", flow.account_name(data), zcode_jwt)
+    print(c(f"\n✔ 已保存 Coding Plan JWT 账号: {acc.name} ({acc.id})", "green"))
 
 
 # ── 账号管理 ─────────────────────────────────────────────────────────────────

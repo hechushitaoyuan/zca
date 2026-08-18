@@ -86,10 +86,31 @@ ZCA_NOVNC_PORT=6080
 远程桌面与鼠标坐标一致，适合人工拖动验证；同时保持浏览器缩放为 100%。该地址只应绑定明确的
 Tailscale IP，禁止设置为 `0.0.0.0`；同一 Tailnet 内的访问范围由 Tailscale ACL 控制。
 
+### 3.2 Z.ai 网页授权登录
+
+后台账号池的“授权登录”使用当前 ZCode 3.7.7 authorization-code 流程。点击“开始登录”后，
+服务会在独立的 `:100` Xvfb 桌面启动一次性 Chromium profile，并返回 OAuth noVNC 地址。
+默认端口为 `6081`，与验证码桌面的 `6080` 隔离，因此授权期间不会遮挡验证码窗口。
+
+SSH 隧道方式可同时转发两个桌面端口：
+
+```bash
+ssh -L 6080:127.0.0.1:6080 -L 6081:127.0.0.1:6081 <VPS用户>@<VPS地址>
+```
+
+Tailscale 部署沿用 `ZCA_NOVNC_BIND_IP`，授权桌面地址为
+`http://<Tailscale-IP>:6081/vnc.html?autoconnect=1&resize=remote`。如外部地址无法自动推导，
+可在 `.env` 显式设置 `ZCODE_OAUTH_NOVNC_URL`。6081 同样没有独立密码，必须仅绑定回环或
+明确的 Tailscale IP，禁止暴露到公网。
+
+每次授权使用新的临时浏览器 profile。服务只捕获官方桥接页生成的一次性授权码，校验随机
+`state` 后兑换最终 ZCode JWT；网页 Cookie 和 OAuth access token 不写入数据库。流程默认
+等待 10 分钟，可用 `ZCODE_OAUTH_BROWSER_TIMEOUT` 与 `ZCODE_OAUTH_TIMEOUT` 调整。
+
 日志脱敏检查：确认日志中 **不出现** 完整 JWT、API Key、verifyParam、后台密码等敏感串。
 `/health` 与 `/meta` 仅返回 `status/version/commit`，不含账号、配置或凭据。
 
-## 3.2 公网直连（可选，需先满足安全前置）
+## 3.3 公网直连（可选，需先满足安全前置）
 
 仅当明确要求通过公网 IP（如 `http://<公网IP>:8047/`）访问时，才放开监听地址。
 
