@@ -23,9 +23,9 @@
 - 设置页提供流量日志，只保存状态、模型、路径、账号名称、Token 用量和耗时等
   运行元数据，不保存提示词、模型输出、验证码或凭据。
 - 账号池支持选择 `GLM-5.3`、`GLM-5.2` 或 `GLM-5-Turbo`，并对指定账号发起最小调用测试。
-- “授权登录”同步官方 ZCode 3.7.7 authorization-code 流程：在隔离的 VPS 浏览器中打开
-  Z.ai 官方网页，人工授权后自动兑换并导入 Coding Plan JWT；不保存网页 Cookie 或 OAuth
-  access token。OAuth 桌面与验证码桌面相互隔离。
+- “授权登录”同步官方 ZCode 3.7.7 authorization-code 流程：显示 Z.ai 官方认证网址，
+  可复制到本地 Windows 无痕浏览器或直接打开；完成后将官方桥接回调网址粘贴回后台，
+  自动兑换并导入 Coding Plan JWT。不会保存网页 Cookie 或 OAuth access token。
 
 ## 致谢
 

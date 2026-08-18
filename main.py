@@ -60,12 +60,13 @@ async def cmd_login(args: list[str]) -> None:
         print(c("目前仅支持: python cli.py login zai", "red"))
         return
     flow = ZaiAuthFlow()
-    await flow.init()
-    print(c("\n✔ OAuth 浏览器已启动，请打开独立授权桌面：", "green"))
-    print(c(settings.OAUTH_NOVNC_URL, "blue"))
-    print("正在等待授权...")
+    _flow_id, authorize_url = await flow.init()
+    print(c("\n✔ 请在本地浏览器打开下面的官方认证链接：", "green"))
+    print(c(authorize_url, "blue"))
+    print("认证完成后，取消打开 ZCode 的提示，并复制地址栏里的完整回调网址。")
     try:
-        data = await flow.run()
+        callback_url = await asyncio.to_thread(input, "回调网址: ")
+        data = await flow.exchange_callback_url(callback_url)
     except Exception as err:  # noqa: BLE001
         print(c(f"❌ 授权失败: {err}", "red"))
         return

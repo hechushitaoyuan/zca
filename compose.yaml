@@ -12,8 +12,6 @@ services:
       - "${ZCA_BIND_IP:-127.0.0.1}:8047:3000"
       # 人工验证码桌面默认只绑定回环；也可显式绑定 Tailscale IP，禁止使用 0.0.0.0。
       - "${ZCA_NOVNC_BIND_IP:-127.0.0.1}:${ZCA_NOVNC_PORT:-6080}:6080"
-      # OAuth 独立授权桌面，与验证码桌面隔离；沿用同一个安全绑定地址。
-      - "${ZCA_NOVNC_BIND_IP:-127.0.0.1}:${ZCA_OAUTH_NOVNC_PORT:-6081}:6081"
     volumes:
       - ./data:/data
     env_file:

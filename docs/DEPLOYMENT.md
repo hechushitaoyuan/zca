@@ -88,24 +88,16 @@ Tailscale IP，禁止设置为 `0.0.0.0`；同一 Tailnet 内的访问范围由 
 
 ### 3.2 Z.ai 网页授权登录
 
-后台账号池的“授权登录”使用当前 ZCode 3.7.7 authorization-code 流程。点击“开始登录”后，
-服务会在独立的 `:100` Xvfb 桌面启动一次性 Chromium profile，并返回 OAuth noVNC 地址。
-默认端口为 `6081`，与验证码桌面的 `6080` 隔离，因此授权期间不会遮挡验证码窗口。
+后台账号池的“授权登录”使用当前 ZCode 3.7.7 authorization-code 流程。点击“生成认证链接”
+后，页面显示 Z.ai 官方认证网址。用户可直接打开，或复制到本地 Windows 无痕浏览器完成
+登录。OAuth 不再使用 VPS noVNC，也不会占用验证码桌面。
 
-SSH 隧道方式可同时转发两个桌面端口：
-
-```bash
-ssh -L 6080:127.0.0.1:6080 -L 6081:127.0.0.1:6081 <VPS用户>@<VPS地址>
-```
-
-Tailscale 部署沿用 `ZCA_NOVNC_BIND_IP`，授权桌面地址为
-`http://<Tailscale-IP>:6081/vnc.html?autoconnect=1&resize=remote`。如外部地址无法自动推导，
-可在 `.env` 显式设置 `ZCODE_OAUTH_NOVNC_URL`。6081 同样没有独立密码，必须仅绑定回环或
-明确的 Tailscale IP，禁止暴露到公网。
-
-每次授权使用新的临时浏览器 profile。服务只捕获官方桥接页生成的一次性授权码，校验随机
-`state` 后兑换最终 ZCode JWT；网页 Cookie 和 OAuth access token 不写入数据库。流程默认
-等待 10 分钟，可用 `ZCODE_OAUTH_BROWSER_TIMEOUT` 与 `ZCODE_OAUTH_TIMEOUT` 调整。
+官方流程最终通过 `https://zcode.z.ai/app/oauth/login` 桥接到
+`zcode://oauth/callback`。这个自定义协议属于用户本地安装的 ZCode，VPS 无法自动接收；因此
+认证完成后若浏览器询问是否打开 ZCode，应先取消，再复制地址栏里的完整官方桥接网址，粘贴
+回管理面板并点击“验证并导入”。后台会严格校验官方来源、回调路径和本次随机 `state`，再用
+一次性授权码兑换最终 ZCode JWT。网页 Cookie、授权码和 OAuth access token 均不写入数据库。
+认证链接默认保留 10 分钟，可用 `ZCODE_OAUTH_TIMEOUT` 调整。
 
 日志脱敏检查：确认日志中 **不出现** 完整 JWT、API Key、verifyParam、后台密码等敏感串。
 `/health` 与 `/meta` 仅返回 `status/version/commit`，不含账号、配置或凭据。

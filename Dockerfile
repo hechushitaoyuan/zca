@@ -45,7 +45,7 @@ LABEL org.opencontainers.image.title="zca" \
 
 # 账号 / 设置持久化目录（建议挂载到宿主机卷）
 VOLUME ["/data"]
-EXPOSE 3000 6080 6081
+EXPOSE 3000 6080
 
 # 健康检查：不依赖 curl（构建期已 purge），用镜像内 Python 探活 /health。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

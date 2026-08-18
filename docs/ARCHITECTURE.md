@@ -98,8 +98,7 @@ graph TD
 | Quota Monitor | `app/quota.py` | 单账号额度查询 + 状态判定 + 后台周期刷新任务 |
 | Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、一次性参数/串行/重试 |
 | Captcha Solver | `captcha_node/browser_solver.js` | 真实 Chromium 跑阿里云官方 SDK，输出 `verifyParam` |
-| OAuth Flow | `app/oauth.py` | ZCode 3.7.7 authorize → 深链接回调捕获 → token 兑换 |
-| OAuth Browser | `captcha_node/oauth_login.js` | 独立 Xvfb Chromium 中人工网页登录；只输出一次性授权码 |
+| OAuth Flow | `app/oauth.py` | 生成官方认证链接 → 校验粘贴的桥接/深链接回调 → token 兑换 |
 | Settings | `app/settings.py` | 环境变量 / 默认值 / 路径 / 上游端点 |
 | Logs | `app/logs.py` | 彩色终端日志(banner / req / req_ok / req_err …) |
 
@@ -270,7 +269,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 所有可调参数集中在 `app/settings.py`,均可由环境变量覆盖(见 `README.md` 的环境变量表)。
 要点:`ZCODE_PORT`、`ZCODE_DATA_DIR`、`ZCODE_QUOTA_REFRESH_INTERVAL`、`ZCODE_COOLING_SECONDS`、
 `ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CONFIG_CACHE_TTL`、
-`ZCODE_OAUTH_BROWSER_TIMEOUT`、`ZCODE_OAUTH_TIMEOUT`、`ZCODE_OAUTH_NOVNC_URL`。
+`ZCODE_OAUTH_TIMEOUT`。
 
 ---
 
@@ -290,7 +289,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 │   ├── logs.py            # 彩色日志
 │   ├── routes/            # gateway / admin_api / pages
 │   └── statics/           # css / js / admin/*.html
-├── captcha_node/          # Chromium 验证码求解器 + OAuth 人工授权浏览器
+├── captcha_node/          # Chromium 验证码求解器
 ├── main.py                # CLI 入口
 ├── data/                  # 运行时生成：accounts.db
 └── docs/ARCHITECTURE.md   # 本文件

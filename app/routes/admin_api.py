@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import secrets
 import time
@@ -28,13 +27,10 @@ router = APIRouter(prefix="/admin/api", dependencies=[Depends(verify_admin_key)]
 @dataclass
 class _LoginSession:
     flow: ZaiAuthFlow
-    task: asyncio.Task | None = None
-    status: str = "pending"
-    message: str = ""
-    account: dict | None = None
+    created_at: float
 
 
-# OAuth 授权使用一个独立可见浏览器桌面，同一时刻只允许一个人工登录流程。
+# OAuth 授权链接由用户在本地浏览器打开；同一时刻只保留一个待完成流程。
 _login_flows: dict[str, _LoginSession] = {}
 _TEST_MODELS = {"GLM-5.3", "GLM-5.2", "GLM-5-Turbo"}
 
@@ -323,12 +319,19 @@ async def clear_request_logs():
 
 
 # ── OAuth 登录（Z.AI 3.7.7 authorization-code flow）────────────────────────
-async def _complete_login(flow_id: str) -> None:
+def _get_login_session(flow_id: str) -> _LoginSession:
     session = _login_flows.get(flow_id)
     if session is None:
-        return
+        raise HTTPException(404, "登录会话不存在或已过期")
+    if time.time() - session.created_at > settings.OAUTH_FLOW_TIMEOUT:
+        _login_flows.pop(flow_id, None)
+        raise HTTPException(410, "登录会话已过期，请重新生成认证链接")
+    return session
+
+
+async def _save_oauth_account(session: _LoginSession, callback_url: str) -> dict:
     try:
-        result = await session.flow.run()
+        result = await session.flow.exchange_callback_url(callback_url)
         token = str(result.get("token") or "").strip()
         if not token:
             raise OAuthError("授权结果缺少 ZCode JWT")
@@ -341,77 +344,54 @@ async def _complete_login(flow_id: str) -> None:
             await refresh_accounts([account])
         except Exception:  # noqa: BLE001 - 额度失败不应撤销已成功的授权
             pass
-        session.account = account.public_view()
-        session.status = "ready"
-    except asyncio.CancelledError:
-        session.status = "cancelled"
-        session.message = "授权已取消"
-        raise
+        return account.public_view()
     except OAuthError as err:
-        session.status = "failed"
-        session.message = str(err)
-    except Exception:  # noqa: BLE001 - 不向前端泄漏未知异常或凭据
-        session.status = "failed"
-        session.message = "授权登录失败，请重新尝试"
+        raise HTTPException(400, str(err)) from err
+    except Exception as err:  # noqa: BLE001 - 不向前端泄漏未知异常或凭据
+        raise HTTPException(502, "授权登录失败，请重新尝试") from err
 
 
 @router.post("/login/start")
 async def login_start():
-    """在独立 VPS Chromium 中发起官方 Z.AI 网页授权。"""
-    for flow_id, session in list(_login_flows.items()):
-        if session.status != "pending":
-            _login_flows.pop(flow_id, None)
-    if any(session.status == "pending" for session in _login_flows.values()):
-        raise HTTPException(409, "已有授权登录正在进行，请先完成或取消")
-
+    """生成可在用户本地浏览器打开的官方 Z.AI 授权链接。"""
+    _login_flows.clear()
     flow = ZaiAuthFlow()
-    flow_id, _authorize_url = await flow.init()
-    session = _LoginSession(flow=flow)
+    flow_id, authorize_url = await flow.init()
+    session = _LoginSession(flow=flow, created_at=time.time())
     _login_flows[flow_id] = session
-    session.task = asyncio.create_task(_complete_login(flow_id))
     return {
         "flow_id": flow_id,
-        "novnc_url": settings.OAUTH_NOVNC_URL,
-        "expires_in": settings.OAUTH_BROWSER_TIMEOUT // 1000,
+        "authorize_url": authorize_url,
+        "expires_in": settings.OAUTH_FLOW_TIMEOUT,
     }
+
+
+@router.post("/login/complete/{flow_id}")
+async def login_complete(flow_id: str, payload: dict = Body(...)):
+    """校验用户粘贴的官方回调网址，兑换 JWT 并加入账号池。"""
+    session = _get_login_session(flow_id)
+    callback_url = str(payload.get("callback_url") or "").strip()
+    account = await _save_oauth_account(session, callback_url)
+    _login_flows.pop(flow_id, None)
+    return {"status": "ready", "account": account}
 
 
 @router.get("/login/poll/{flow_id}")
 async def login_poll(flow_id: str):
-    """轮询独立授权浏览器状态。"""
-    session = _login_flows.get(flow_id)
-    if not session:
-        raise HTTPException(404, "登录会话不存在或已过期")
-    if session.status == "pending":
-        return {"status": "pending"}
-    result = {
-        "status": session.status,
-        **({"message": session.message} if session.message else {}),
-        **({"account": session.account} if session.account else {}),
-    }
-    _login_flows.pop(flow_id, None)
-    return result
+    """兼容旧前端：本地浏览器模式始终等待用户粘贴回调网址。"""
+    session = _get_login_session(flow_id)
+    remaining = max(0, settings.OAUTH_FLOW_TIMEOUT - int(time.time() - session.created_at))
+    return {"status": "pending", "expires_in": remaining}
 
 
 @router.delete("/login/{flow_id}")
 async def login_cancel(flow_id: str):
-    session = _login_flows.pop(flow_id, None)
-    if session is None:
-        return {"ok": True}
-    if session.task and not session.task.done():
-        session.task.cancel()
-        await asyncio.gather(session.task, return_exceptions=True)
+    _login_flows.pop(flow_id, None)
     return {"ok": True}
 
 
 async def shutdown_login_flows() -> None:
-    sessions = list(_login_flows.values())
     _login_flows.clear()
-    tasks = [session.task for session in sessions if session.task and not session.task.done()]
-    for task in tasks:
-        task.cancel()
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 # ── 设置 ─────────────────────────────────────────────────────────────────────

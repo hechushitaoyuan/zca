@@ -1,54 +1,39 @@
 """Z.AI 3.7.7 OAuth authorization-code flow.
 
-The official desktop client opens the Z.AI authorize page, returns through the
-official ``/app/oauth/login`` bridge, and receives a ``zcode://oauth/callback``
-deep link.  zca runs that page in an isolated, visible Chromium session and
-captures only the one-time authorization code. Browser cookies and OAuth access
-tokens are never persisted; only the final Coding Plan JWT enters the account
-store.
+The account owner opens the official authorize URL in a local browser. Z.ai
+returns through its official HTTPS bridge and then attempts to launch the
+``zcode://oauth/callback`` desktop deep link. Since that deep link belongs to
+the user's local ZCode installation, zca accepts the final bridge/deep-link URL
+copied back into the admin panel, validates its random state, and exchanges the
+one-time code. Only the final Coding Plan JWT enters the account store.
 """
 
 from __future__ import annotations
 
-import asyncio
-import base64
-import os
 import secrets
-import shutil
-import signal
-import tempfile
-from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
 from . import settings
 
 _DEEP_LINK = "zcode://oauth/callback"
-_CODE_MARKER = b"OAUTH_CODE_B64="
-_DIAG_MAX = 200
 _MIN_CODE_LEN = 8
 _MAX_CODE_LEN = 4096
+_MAX_CALLBACK_URL_LEN = 16_384
 _MIN_JWT_LEN = 32
 
 
 class OAuthError(RuntimeError):
-    """Safe, bounded OAuth error suitable for the admin UI."""
+    """Safe OAuth error suitable for the admin UI."""
 
 
-class OAuthBrowserError(OAuthError):
-    """The visible authorization browser did not produce a callback code."""
+class OAuthCallbackError(OAuthError):
+    """The pasted callback URL is missing, malformed, or belongs to another flow."""
 
 
 class OAuthTokenError(OAuthError):
     """The provider rejected the authorization-code exchange."""
-
-
-def _tail(raw: bytes | str | None, limit: int = _DIAG_MAX) -> str:
-    if not raw:
-        return ""
-    text = raw.decode("utf-8", "ignore") if isinstance(raw, bytes) else raw
-    return " ".join(text.split())[-limit:]
 
 
 def _official_redirect_uri() -> str:
@@ -61,7 +46,6 @@ class ZaiAuthFlow:
         self.state = secrets.token_urlsafe(32)
         self.redirect_uri = _official_redirect_uri()
         self.authorize_url = self._build_authorize_url()
-        self._profile_dir: Path | None = None
 
     def _build_authorize_url(self) -> str:
         query = urlencode(
@@ -75,85 +59,43 @@ class ZaiAuthFlow:
         return f"{settings.OAUTH_AUTHORIZE_URL}?{query}"
 
     async def init(self) -> tuple[str, str]:
-        """Compatibility wrapper used by the web and CLI entry points."""
         return self.flow_id, self.authorize_url
 
-    async def run(self) -> dict:
-        code = await self._run_browser()
-        return await self.exchange_code(code)
-
-    async def _run_browser(self) -> str:
-        if not settings.OAUTH_BROWSER_JS.exists():
-            raise OAuthBrowserError("授权浏览器脚本不存在")
-        argv = [
-            settings.NODE_PATH,
-            str(settings.OAUTH_BROWSER_JS),
-            self.authorize_url,
-            self.state,
-        ]
-        self._profile_dir = Path(tempfile.mkdtemp(prefix="zca-oauth-"))
+    def code_from_callback_url(self, callback_url: str) -> str:
+        value = str(callback_url or "").strip()
+        if not value or len(value) > _MAX_CALLBACK_URL_LEN:
+            raise OAuthCallbackError("请粘贴认证完成后地址栏里的完整回调网址")
         try:
-            try:
-                proc = await self._create_subprocess(argv)
-            except FileNotFoundError as err:
-                raise OAuthBrowserError("无法启动授权浏览器") from err
+            parsed = urlparse(value)
+        except ValueError as err:
+            raise OAuthCallbackError("回调网址格式无效") from err
 
-            try:
-                stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(), timeout=settings.OAUTH_FLOW_TIMEOUT
-                )
-            except asyncio.TimeoutError as err:
-                await self._terminate(proc)
-                raise OAuthBrowserError("授权等待超时，已关闭浏览器") from err
-            except asyncio.CancelledError:
-                await self._terminate(proc)
-                raise
-
-            if proc.returncode != 0:
-                detail = _tail(stderr)
-                raise OAuthBrowserError(
-                    f"授权浏览器未完成（code={proc.returncode}）{detail}".strip()
-                )
-            return self._extract_code(stdout)
-        finally:
-            profile_dir, self._profile_dir = self._profile_dir, None
-            if profile_dir is not None:
-                await asyncio.shield(
-                    asyncio.to_thread(shutil.rmtree, profile_dir, True)
-                )
-
-    async def _create_subprocess(self, argv: list[str]):
-        env = os.environ.copy()
-        env.setdefault("ZCODE_CHROMIUM_PATH", settings.CHROMIUM_PATH)
-        env["DISPLAY"] = settings.OAUTH_DISPLAY
-        env["ZCODE_OAUTH_BROWSER_TIMEOUT"] = str(settings.OAUTH_BROWSER_TIMEOUT)
-        env.setdefault("ZCODE_OAUTH_BROWSER_HEADLESS", "0")
-        if self._profile_dir is not None:
-            env["ZCODE_OAUTH_PROFILE_DIR"] = str(self._profile_dir)
-        return await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(settings.CAPTCHA_SOLVER_DIR),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            start_new_session=True,
+        query = parse_qs(parsed.query, keep_blank_values=True)
+        is_official_bridge = (
+            parsed.scheme == "https"
+            and parsed.hostname == "zcode.z.ai"
+            and parsed.path.rstrip("/") == "/app/oauth/login"
+            and query.get("redirect", [""])[0] == _DEEP_LINK
         )
-
-    @staticmethod
-    def _extract_code(stdout: bytes) -> str:
-        marker_line = next(
-            (line for line in stdout.splitlines() if line.startswith(_CODE_MARKER)), None
+        is_official_deep_link = (
+            parsed.scheme == "zcode"
+            and parsed.hostname == "oauth"
+            and parsed.path.rstrip("/") == "/callback"
         )
-        if marker_line is None:
-            raise OAuthBrowserError("授权浏览器输出缺少回调标记")
-        encoded = marker_line[len(_CODE_MARKER) :]
-        try:
-            code = base64.urlsafe_b64decode(encoded + b"=" * (-len(encoded) % 4)).decode()
-        except (ValueError, UnicodeDecodeError) as err:
-            raise OAuthBrowserError("授权回调编码无效") from err
+        if not (is_official_bridge or is_official_deep_link):
+            raise OAuthCallbackError("这不是 ZCode 官方授权回调网址")
+
+        if query.get("error", [""])[0]:
+            raise OAuthCallbackError("Z.ai 授权已取消或被拒绝")
+        if query.get("state", [""])[0] != self.state:
+            raise OAuthCallbackError("回调 state 不匹配，请使用本次生成的认证链接")
+        code = query.get("code", query.get("authCode", [""]))[0]
         if not (_MIN_CODE_LEN <= len(code) <= _MAX_CODE_LEN):
-            raise OAuthBrowserError(f"授权回调长度无效（len={len(code)}）")
+            raise OAuthCallbackError("回调网址中缺少有效授权码")
         return code
+
+    async def exchange_callback_url(self, callback_url: str) -> dict:
+        return await self.exchange_code(self.code_from_callback_url(callback_url))
 
     async def exchange_code(self, code: str) -> dict:
         if not (_MIN_CODE_LEN <= len(code) <= _MAX_CODE_LEN):
@@ -179,7 +121,9 @@ class ZaiAuthFlow:
                         f"Z.ai 拒绝 token 兑换（code={payload.get('code')}）"
                     )
                 token = str(data.get("token") or "").strip()
-                access_token = str((data.get("zai") or {}).get("access_token") or "").strip()
+                access_token = str(
+                    (data.get("zai") or {}).get("access_token") or ""
+                ).strip()
                 if len(token) < _MIN_JWT_LEN or token.count(".") != 2:
                     raise OAuthTokenError("token 兑换结果缺少有效 ZCode JWT")
 
@@ -215,18 +159,3 @@ class ZaiAuthFlow:
             if isinstance(value, str) and value.strip():
                 return value.strip()[:120]
         return "zai-oauth"
-
-    @staticmethod
-    async def _terminate(proc) -> None:
-        try:
-            pid = getattr(proc, "pid", None)
-            if pid:
-                os.killpg(pid, signal.SIGKILL)
-            else:
-                proc.kill()
-        except (ProcessLookupError, PermissionError):
-            pass
-        try:
-            await asyncio.shield(proc.wait())
-        except (asyncio.CancelledError, ProcessLookupError, ChildProcessError):
-            pass

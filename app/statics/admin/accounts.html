@@ -109,22 +109,26 @@
     <!-- 授权登录 -->
     <div id="add-pane-login" style="display:none">
       <div class="dialog-body">
-        <div class="dialog-help">通过 Z.AI 官方网页手动授权。授权页运行在独立 VPS 浏览器中，成功后只保存 Coding Plan JWT，不保存网页 Cookie。</div>
+        <div class="dialog-help">生成 ZCode 官方认证网址后，可复制到 Windows 无痕浏览器，或直接点击打开。服务端只保存最终 Coding Plan JWT，不保存网页 Cookie。</div>
         <div id="login-idle">
-          <button onclick="startLogin()" id="login-start-btn" class="dialog-btn dialog-btn-primary w-full" style="height:40px">开始登录</button>
+          <button onclick="startLogin()" id="login-start-btn" class="dialog-btn dialog-btn-primary w-full" style="height:40px">生成认证链接</button>
         </div>
         <div id="login-active" style="display:none">
-          <div class="dialog-help" style="margin-bottom:6px">请打开独立授权桌面，在其中完成 Z.ai 登录与确认：</div>
+          <div class="dialog-label" style="margin-bottom:6px">1. 在本地浏览器打开 ZCode 官方认证网址</div>
           <div style="display:flex;gap:8px;align-items:center">
             <input class="input" id="login-url" readonly style="font-size:12px">
             <button onclick="copyLoginUrl()" class="dialog-btn">复制</button>
-            <button onclick="openLoginUrl()" class="dialog-btn dialog-btn-primary">打开授权桌面</button>
+            <button onclick="openLoginUrl()" class="dialog-btn dialog-btn-primary">打开认证页面</button>
           </div>
-          <div class="live-dot" id="login-status" style="margin-top:16px">等待你在授权桌面完成登录…</div>
+          <div class="dialog-label" style="margin:16px 0 6px">2. 认证完成后，复制地址栏里的完整回调网址</div>
+          <div class="dialog-help" style="margin-bottom:8px">页面若询问是否打开 ZCode，请先选择取消；复制以 <code>https://zcode.z.ai/app/oauth/login</code> 开头的完整网址并粘贴到下面。</div>
+          <textarea class="input" id="login-callback-url" rows="3" placeholder="粘贴认证完成后的完整回调网址…" style="font-size:12px;resize:vertical"></textarea>
+          <div class="live-dot" id="login-status" style="margin-top:12px">等待完成本地浏览器认证…</div>
         </div>
       </div>
       <div class="dialog-actions">
         <button onclick="cancelLogin()" class="dialog-btn">关闭</button>
+        <button onclick="completeLogin()" id="login-complete-btn" class="dialog-btn dialog-btn-primary" style="display:none">验证并导入</button>
       </div>
     </div>
   </div>
@@ -287,7 +291,7 @@ async function doAdd(){
 }
 
 /* ── 授权登录 ── */
-let _loginTimer=null, _loginUrl='', _loginFlowId='';
+let _loginUrl='', _loginFlowId='';
 function switchAddTab(tab){
   document.getElementById('tab-paste').classList.toggle('active',tab==='paste');
   document.getElementById('tab-login').classList.toggle('active',tab==='login');
@@ -296,11 +300,13 @@ function switchAddTab(tab){
   if(tab!=='login')cancelLoginSession();
 }
 function resetLoginPane(){
-  stopLoginPoll();
   _loginUrl='';_loginFlowId='';
   document.getElementById('login-idle').style.display='';
   document.getElementById('login-active').style.display='none';
   document.getElementById('login-start-btn').disabled=false;
+  document.getElementById('login-complete-btn').style.display='none';
+  document.getElementById('login-complete-btn').disabled=false;
+  document.getElementById('login-callback-url').value='';
 }
 async function startLogin(){
   const btn=document.getElementById('login-start-btn');
@@ -308,50 +314,35 @@ async function startLogin(){
   try{
     const d=await api('POST','/login/start');
     _loginFlowId=d.flow_id;
-    _loginUrl=d.novnc_url;
+    _loginUrl=d.authorize_url;
     document.getElementById('login-url').value=_loginUrl;
     document.getElementById('login-idle').style.display='none';
     document.getElementById('login-active').style.display='';
-    setLoginStatus('等待你在授权桌面完成登录…',false);
-    try{window.open(_loginUrl,'_blank','noopener');}catch{}
-    pollLogin(_loginFlowId,Math.max(1,Number(d.expires_in||600)));
+    document.getElementById('login-complete-btn').style.display='';
+    setLoginStatus(`认证链接有效期约 ${Math.max(1,Math.round(Number(d.expires_in||600)/60))} 分钟`,false);
   }catch(e){
     showToast('发起登录失败: '+e.message,'error');
     btn.disabled=false;
   }
 }
-function pollLogin(flowId,expiresIn){
-  let n=0;
-  _loginTimer=setInterval(async()=>{
-    if(++n>Math.ceil(expiresIn/2.5)+4){
-      stopLoginPoll();
-      await cancelLoginSession(true);
-      setLoginStatus('登录超时，请重新开始',true);
-      return;
-    }
-    try{
-      const d=await api('GET','/login/poll/'+flowId);
-      if(d.status==='ready'){
-        stopLoginPoll();
-        _loginFlowId='';
-        showToast('登录成功，已导入账号池','success');
-        closeModal('modal-add');
-        load();
-      }else if(d.status==='failed'){
-        stopLoginPoll();
-        _loginFlowId='';
-        setLoginStatus(d.message||'授权失败或被拒绝',true);
-      }else if(d.status==='cancelled'){
-        stopLoginPoll();
-        _loginFlowId='';
-        setLoginStatus('授权已取消',true);
-      }
-    }catch(e){
-      if(String(e.message||'').includes('404')){
-        stopLoginPoll();_loginFlowId='';setLoginStatus('登录会话已失效，请重试',true);
-      }
-    }
-  },2500);
+async function completeLogin(){
+  const callbackUrl=document.getElementById('login-callback-url').value.trim();
+  if(!_loginFlowId)return showToast('请先生成认证链接','error');
+  if(!callbackUrl)return showToast('请粘贴认证完成后的完整回调网址','error');
+  const btn=document.getElementById('login-complete-btn');
+  btn.disabled=true;
+  setLoginStatus('正在校验回调并导入账号…',false);
+  try{
+    await api('POST','/login/complete/'+_loginFlowId,{callback_url:callbackUrl});
+    _loginFlowId='';
+    showToast('登录成功，已导入账号池','success');
+    closeModal('modal-add');
+    resetLoginPane();
+    load();
+  }catch(e){
+    btn.disabled=false;
+    setLoginStatus(e.message||'回调验证失败，请检查网址后重试',true);
+  }
 }
 function setLoginStatus(text,isErr){
   const el=document.getElementById('login-status');
@@ -359,9 +350,7 @@ function setLoginStatus(text,isErr){
   el.classList.toggle('live-dot',!isErr);
   el.style.color=isErr?'var(--error)':'';
 }
-function stopLoginPoll(){if(_loginTimer){clearInterval(_loginTimer);_loginTimer=null;}}
 async function cancelLoginSession(silent=false){
-  stopLoginPoll();
   const flowId=_loginFlowId;
   _loginFlowId='';
   if(flowId)try{await api('DELETE','/login/'+flowId);}catch(e){if(!silent)showToast('取消授权失败: '+e.message,'error');}
