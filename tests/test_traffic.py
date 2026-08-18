@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -92,6 +93,26 @@ class RequestLogStoreTests(unittest.TestCase):
         item = self.store.list_request_logs()["items"][0]
         self.assertEqual(item["account_name"], "full-address@example.com")
 
+    def test_oauth_metadata_round_trips_without_public_secret_exposure(self) -> None:
+        account = self.store.add_account(
+            "zai", "oauth@example.com", "header.payload.signature"
+        )
+        account.oauth = {
+            "token_response": {"zai": {"access_token": "saved-sensitive-token"}},
+            "user": {"email": "oauth@example.com"},
+        }
+        self.store.update_account(account)
+
+        restored = Store().find("zai", account.id)
+        self.assertIsNotNone(restored)
+        self.assertEqual(
+            restored.oauth["token_response"]["zai"]["access_token"],
+            "saved-sensitive-token",
+        )
+        public = restored.public_view()
+        self.assertTrue(public["oauth_saved"])
+        self.assertNotIn("saved-sensitive-token", str(public))
+
 
 class TrafficHelpersTests(unittest.TestCase):
     def test_usage_tracker_handles_split_json_fields(self) -> None:
@@ -120,7 +141,86 @@ class PublicRouteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["models"], "/v1/models")
 
 
+class AccountMutationEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_delete_single_account_uses_path_parameter(self) -> None:
+        account = Account.create("zai", "delete@example.com", "header.payload.signature")
+
+        class FakeStore:
+            removed = None
+
+            @staticmethod
+            def find_any(account_id):
+                return account if account_id == account.id else None
+
+            def remove_account(self, provider, account_id):
+                self.removed = (provider, account_id)
+                return True
+
+        fake_store = FakeStore()
+        with patch.object(admin_api, "store", fake_store):
+            result = await admin_api.delete_account(account.id)
+
+        self.assertEqual(result, {"deleted": 1})
+        self.assertEqual(fake_store.removed, ("zai", account.id))
+
+
 class AccountTestEndpointTests(unittest.IsolatedAsyncioTestCase):
+    async def test_captcha_wait_is_bounded_for_fast_account_probe(self) -> None:
+        account = Account.create("zai", "slow@example.com", "header.payload.signature")
+
+        class FakeStore:
+            released = False
+
+            @staticmethod
+            def find_any(account_id):
+                return account if account_id == account.id else None
+
+            @staticmethod
+            def reserve_specific(selected):
+                selected.active_requests += 1
+                return True
+
+            def release(self, selected):
+                selected.active_requests -= 1
+                self.released = True
+
+        class SlowCaptcha:
+            cancelled = False
+
+            async def get_verify_param(self, _port):
+                try:
+                    await asyncio.sleep(3600)
+                finally:
+                    self.cancelled = True
+
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "scheme": "http",
+                "server": ("testserver", 3000),
+                "path": f"/admin/api/accounts/{account.id}/test",
+                "query_string": b"",
+                "headers": [],
+            }
+        )
+        fake_store = FakeStore()
+        captcha = SlowCaptcha()
+        with (
+            patch.object(admin_api, "store", fake_store),
+            patch.object(admin_api, "captcha_manager", captcha),
+            patch.object(settings, "ACCOUNT_TEST_CAPTCHA_TIMEOUT", 0.01),
+            patch.object(admin_api, "record_request", Mock()),
+        ):
+            result = await admin_api.test_account(
+                account.id, request, {"model": "GLM-5.3"}
+            )
+
+        self.assertEqual(result["status_code"], 504)
+        self.assertEqual(result["type"], "captcha_timeout")
+        self.assertTrue(captcha.cancelled)
+        self.assertTrue(fake_store.released)
+
     async def test_selected_account_and_model_are_used(self) -> None:
         account = Account.create("bigmodel", "tester@example.com", "test-api-key")
 

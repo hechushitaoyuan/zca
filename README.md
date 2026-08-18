@@ -24,8 +24,9 @@
   运行元数据，不保存提示词、模型输出、验证码或凭据。
 - 账号池支持选择 `GLM-5.3`、`GLM-5.2` 或 `GLM-5-Turbo`，并对指定账号发起最小调用测试。
 - “授权登录”同步官方 ZCode 3.7.7 authorization-code 流程：显示 Z.ai 官方认证网址，
-  可复制到本地 Windows 无痕浏览器或直接打开；完成后将官方桥接回调网址粘贴回后台，
-  自动兑换并导入 Coding Plan JWT。不会保存网页 Cookie 或 OAuth access token。
+  可复制到本地 Windows 无痕浏览器或直接打开；也可直接粘贴 Windows ZCode/浏览器已生成、
+  尚未消费的官方回调网址。后台保存 Coding Plan JWT、OAuth token 响应及用户资料；一次性
+  回调 code 不保存，本地浏览器 Cookie 无法被服务端读取。
 
 ## 致谢
 

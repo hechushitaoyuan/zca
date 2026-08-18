@@ -88,15 +88,18 @@ Tailscale IP，禁止设置为 `0.0.0.0`；同一 Tailnet 内的访问范围由 
 
 ### 3.2 Z.ai 网页授权登录
 
-后台账号池的“授权登录”使用当前 ZCode 3.7.7 authorization-code 流程。点击“生成认证链接”
-后，页面显示 Z.ai 官方认证网址。用户可直接打开，或复制到本地 Windows 无痕浏览器完成
-登录。OAuth 不再使用 VPS noVNC，也不会占用验证码桌面。
+后台账号池的“授权登录”使用当前 ZCode 3.7.7 authorization-code 流程。由本地 Windows
+ZCode/浏览器生成且尚未被客户端消费的官方回调网址可以直接粘贴导入，不要求先在本项目
+生成链接。如果还没有回调网址，也可点击“生成新的认证链接”，直接打开或复制到 Windows
+无痕浏览器完成登录。OAuth 不使用 VPS noVNC，也不会占用验证码桌面。
 
 官方流程最终通过 `https://zcode.z.ai/app/oauth/login` 桥接到
 `zcode://oauth/callback`。这个自定义协议属于用户本地安装的 ZCode，VPS 无法自动接收；因此
 认证完成后若浏览器询问是否打开 ZCode，应先取消，再复制地址栏里的完整官方桥接网址，粘贴
-回管理面板并点击“验证并导入”。后台会严格校验官方来源、回调路径和本次随机 `state`，再用
-一次性授权码兑换最终 ZCode JWT。网页 Cookie、授权码和 OAuth access token 均不写入数据库。
+回管理面板并点击“验证并导入”。对于本项目生成的流程，后台会额外核对本次随机 `state`；
+对于外部 ZCode 流程，则采用回调中的 `state` 完成官方 token 兑换。数据库保存最终 ZCode
+JWT、OAuth token 响应（含上游实际返回的 access/refresh token 等字段）及用户资料。已消费的
+一次性授权码和完整回调网址不保存；本地浏览器 Cookie 不会发送给 VPS，因此无法保存。
 认证链接默认保留 10 分钟，可用 `ZCODE_OAUTH_TIMEOUT` 调整。
 
 日志脱敏检查：确认日志中 **不出现** 完整 JWT、API Key、verifyParam、后台密码等敏感串。

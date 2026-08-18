@@ -11,6 +11,7 @@ one-time code. Only the final Coding Plan JWT enters the account store.
 from __future__ import annotations
 
 import secrets
+import time
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
@@ -61,7 +62,10 @@ class ZaiAuthFlow:
     async def init(self) -> tuple[str, str]:
         return self.flow_id, self.authorize_url
 
-    def code_from_callback_url(self, callback_url: str) -> str:
+    @staticmethod
+    def _callback_values(
+        callback_url: str, expected_state: str | None = None
+    ) -> tuple[str, str]:
         value = str(callback_url or "").strip()
         if not value or len(value) > _MAX_CALLBACK_URL_LEN:
             raise OAuthCallbackError("请粘贴认证完成后地址栏里的完整回调网址")
@@ -87,15 +91,33 @@ class ZaiAuthFlow:
 
         if query.get("error", [""])[0]:
             raise OAuthCallbackError("Z.ai 授权已取消或被拒绝")
-        if query.get("state", [""])[0] != self.state:
+        state = query.get("state", [""])[0]
+        if not (16 <= len(state) <= 512):
+            raise OAuthCallbackError("回调网址中缺少有效 state")
+        if expected_state is not None and state != expected_state:
             raise OAuthCallbackError("回调 state 不匹配，请使用本次生成的认证链接")
         code = query.get("code", query.get("authCode", [""]))[0]
         if not (_MIN_CODE_LEN <= len(code) <= _MAX_CODE_LEN):
             raise OAuthCallbackError("回调网址中缺少有效授权码")
+        return code, state
+
+    def code_from_callback_url(self, callback_url: str) -> str:
+        code, _state = self._callback_values(callback_url, self.state)
         return code
 
     async def exchange_callback_url(self, callback_url: str) -> dict:
         return await self.exchange_code(self.code_from_callback_url(callback_url))
+
+    @classmethod
+    async def exchange_external_callback_url(
+        cls, callback_url: str
+    ) -> tuple["ZaiAuthFlow", dict]:
+        """Exchange a callback created by the user's local ZCode/browser flow."""
+        flow = cls()
+        code, state = flow._callback_values(callback_url)
+        flow.state = state
+        flow.authorize_url = flow._build_authorize_url()
+        return flow, await flow.exchange_code(code)
 
     async def exchange_code(self, code: str) -> dict:
         if not (_MIN_CODE_LEN <= len(code) <= _MAX_CODE_LEN):
@@ -121,9 +143,8 @@ class ZaiAuthFlow:
                         f"Z.ai 拒绝 token 兑换（code={payload.get('code')}）"
                     )
                 token = str(data.get("token") or "").strip()
-                access_token = str(
-                    (data.get("zai") or {}).get("access_token") or ""
-                ).strip()
+                provider_tokens = data.get("zai") if isinstance(data.get("zai"), dict) else {}
+                access_token = str(provider_tokens.get("access_token") or "").strip()
                 if len(token) < _MIN_JWT_LEN or token.count(".") != 2:
                     raise OAuthTokenError("token 兑换结果缺少有效 ZCode JWT")
 
@@ -149,7 +170,15 @@ class ZaiAuthFlow:
         except (httpx.HTTPError, ValueError) as err:
             raise OAuthTokenError("token 兑换请求失败") from err
 
-        return {"token": token, "user": user}
+        oauth_record = {
+            "provider": "zai",
+            "received_at": time.time(),
+            "token_response": {
+                key: value for key, value in data.items() if key not in ("token", "user")
+            },
+            "user": user,
+        }
+        return {"token": token, "user": user, "oauth": oauth_record}
 
     @staticmethod
     def account_name(result: dict) -> str:

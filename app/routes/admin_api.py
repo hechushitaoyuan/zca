@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import time
@@ -23,6 +24,7 @@ from ..traffic import UsageTracker, record_request
 from ..upstream_errors import classify_upstream_failure
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(verify_admin_key)])
+
 
 @dataclass
 class _LoginSession:
@@ -104,6 +106,17 @@ async def delete_accounts(ids: list[str] = Body(...)):
         if acc and store.remove_account(acc.provider, aid):
             deleted += 1
     return {"deleted": deleted}
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(account_id: str):
+    """删除单个账号；使用路径参数避免代理丢弃 DELETE 请求体。"""
+    acc = store.find_any(account_id)
+    if not acc:
+        raise HTTPException(404, "账号不存在")
+    if not store.remove_account(acc.provider, account_id):
+        raise HTTPException(409, "账号删除失败，请重试")
+    return {"deleted": 1}
 
 
 # ── 编辑账号 ─────────────────────────────────────────────────────────────────
@@ -196,9 +209,26 @@ async def test_account(account_id: str, request: Request, payload: dict = Body(.
             verify_region = "sgp"
             if account.provider == "zai" and account.mode == "jwt":
                 try:
-                    verify_param, verify_region = await captcha_manager.get_verify_param(
-                        request.url.port or settings.PORT
+                    verify_param, verify_region = await asyncio.wait_for(
+                        captcha_manager.get_verify_param(request.url.port or settings.PORT),
+                        timeout=settings.ACCOUNT_TEST_CAPTCHA_TIMEOUT,
                     )
+                except asyncio.TimeoutError:
+                    record_request(
+                        request_meta,
+                        account,
+                        504,
+                        error_type="captcha_timeout",
+                    )
+                    return {
+                        "ok": False,
+                        "status_code": 504,
+                        "type": "captcha_timeout",
+                        "message": (
+                            "测试验证码生成超时"
+                            f"（{settings.ACCOUNT_TEST_CAPTCHA_TIMEOUT} 秒）"
+                        ),
+                    }
                 except InteractiveCaptchaRequired:
                     record_request(
                         request_meta,
@@ -230,7 +260,10 @@ async def test_account(account_id: str, request: Request, payload: dict = Body(.
                     verify_region,
                 )
                 async with httpx.AsyncClient(
-                    timeout=httpx.Timeout(connect=30.0, read=150.0, write=120.0, pool=30.0)
+                    timeout=httpx.Timeout(
+                        float(settings.ACCOUNT_TEST_UPSTREAM_TIMEOUT),
+                        connect=min(15.0, float(settings.ACCOUNT_TEST_UPSTREAM_TIMEOUT)),
+                    )
                 ) as client:
                     response = await client.post(
                         url,
@@ -329,17 +362,26 @@ def _get_login_session(flow_id: str) -> _LoginSession:
     return session
 
 
-async def _save_oauth_account(session: _LoginSession, callback_url: str) -> dict:
+async def _exchange_and_save_oauth(
+    callback_url: str, flow: ZaiAuthFlow | None = None
+) -> dict:
     try:
-        result = await session.flow.exchange_callback_url(callback_url)
+        if flow is None:
+            flow, result = await ZaiAuthFlow.exchange_external_callback_url(callback_url)
+        else:
+            result = await flow.exchange_callback_url(callback_url)
         token = str(result.get("token") or "").strip()
         if not token:
             raise OAuthError("授权结果缺少 ZCode JWT")
         account = store.add_account(
             "zai",
-            session.flow.account_name(result),
+            flow.account_name(result),
             token,
         )
+        oauth_record = result.get("oauth")
+        if isinstance(oauth_record, dict):
+            account.oauth = oauth_record
+            store.update_account(account)
         try:
             await refresh_accounts([account])
         except Exception:  # noqa: BLE001 - 额度失败不应撤销已成功的授权
@@ -371,8 +413,16 @@ async def login_complete(flow_id: str, payload: dict = Body(...)):
     """校验用户粘贴的官方回调网址，兑换 JWT 并加入账号池。"""
     session = _get_login_session(flow_id)
     callback_url = str(payload.get("callback_url") or "").strip()
-    account = await _save_oauth_account(session, callback_url)
+    account = await _exchange_and_save_oauth(callback_url, session.flow)
     _login_flows.pop(flow_id, None)
+    return {"status": "ready", "account": account}
+
+
+@router.post("/login/import-callback")
+async def login_import_callback(payload: dict = Body(...)):
+    """直接导入由本地 ZCode/浏览器生成、尚未消费的官方回调网址。"""
+    callback_url = str(payload.get("callback_url") or "").strip()
+    account = await _exchange_and_save_oauth(callback_url)
     return {"status": "ready", "account": account}
 
 

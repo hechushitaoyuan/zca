@@ -68,7 +68,7 @@ class OAuthFlowTests(unittest.IsolatedAsyncioTestCase):
                     flow.code_from_callback_url(callback)
                 self.assertNotIn(VALID_CODE, str(ctx.exception))
 
-    async def test_exchange_returns_only_final_jwt_and_user_profile(self) -> None:
+    async def test_exchange_returns_jwt_and_reusable_oauth_metadata(self) -> None:
         calls = []
 
         class FakeResponse:
@@ -113,22 +113,31 @@ class OAuthFlowTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(oauth.httpx, "AsyncClient", FakeClient):
             result = await flow.exchange_callback_url(bridge_callback(flow))
 
+        self.assertEqual(result["token"], VALID_JWT)
         self.assertEqual(
-            result,
-            {
-                "token": VALID_JWT,
-                "user": {
-                    "username": "fallback-name",
-                    "email": "owner@example.com",
-                },
-            },
+            result["user"],
+            {"username": "fallback-name", "email": "owner@example.com"},
         )
         self.assertNotIn("access_token", result)
+        self.assertEqual(
+            result["oauth"]["token_response"]["zai"]["access_token"],
+            "sensitive-access-token",
+        )
+        self.assertEqual(result["oauth"]["user"]["email"], "owner@example.com")
         post_body = calls[0][2]["json"]
         self.assertEqual(post_body["provider"], "zai")
         self.assertEqual(post_body["code"], VALID_CODE)
         self.assertEqual(post_body["state"], flow.state)
         self.assertEqual(post_body["redirect_uri"], flow.redirect_uri)
+
+    async def test_external_callback_adopts_its_own_state_without_generation(self) -> None:
+        external_state = "external-state-from-windows-123456"
+        callback = bridge_callback(ZaiAuthFlow(), state=external_state)
+        expected = {"token": VALID_JWT, "user": {}, "oauth": {}}
+        with patch.object(ZaiAuthFlow, "exchange_code", AsyncMock(return_value=expected)):
+            flow, result = await ZaiAuthFlow.exchange_external_callback_url(callback)
+        self.assertEqual(flow.state, external_state)
+        self.assertEqual(result, expected)
 
     async def test_invalid_token_response_is_rejected(self) -> None:
         class FakeResponse:
@@ -185,11 +194,17 @@ class OAuthAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("novnc_url", result)
         self.assertEqual(await admin_api.login_cancel("flow-start"), {"ok": True})
 
-    async def test_complete_adds_only_final_zcode_jwt(self) -> None:
+    async def test_complete_persists_jwt_and_oauth_metadata(self) -> None:
         class FakeFlow:
             async def exchange_callback_url(self, callback_url):
                 self.callback_url = callback_url
-                return {"token": VALID_JWT, "user": {"email": "owner@example.com"}}
+                return {
+                    "token": VALID_JWT,
+                    "user": {"email": "owner@example.com"},
+                    "oauth": {
+                        "token_response": {"zai": {"access_token": "saved-access"}}
+                    },
+                }
 
             @staticmethod
             def account_name(_result):
@@ -197,10 +212,14 @@ class OAuthAdminTests(unittest.IsolatedAsyncioTestCase):
 
         class FakeStore:
             added = None
+            updated = None
 
             def add_account(self, provider, name, token):
                 self.added = (provider, name, token)
                 return Account.create(provider, name, token)
+
+            def update_account(self, account):
+                self.updated = account
 
         flow = FakeFlow()
         fake_store = FakeStore()
@@ -220,7 +239,44 @@ class OAuthAdminTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow.callback_url, "https://zcode.z.ai/callback")
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["account"]["mode"], "jwt")
+        self.assertTrue(result["account"]["oauth_saved"])
+        self.assertEqual(
+            fake_store.updated.oauth["token_response"]["zai"]["access_token"],
+            "saved-access",
+        )
         self.assertNotIn("flow-complete", admin_api._login_flows)
+
+    async def test_direct_callback_import_needs_no_generated_flow(self) -> None:
+        flow = ZaiAuthFlow()
+        result = {
+            "token": VALID_JWT,
+            "user": {"email": "direct@example.com"},
+            "oauth": {},
+        }
+
+        class FakeStore:
+            def add_account(self, provider, name, token):
+                return Account.create(provider, name, token)
+
+            @staticmethod
+            def update_account(_account):
+                pass
+
+        with (
+            patch.object(
+                ZaiAuthFlow,
+                "exchange_external_callback_url",
+                AsyncMock(return_value=(flow, result)),
+            ),
+            patch.object(admin_api, "store", FakeStore()),
+            patch.object(admin_api, "refresh_accounts", AsyncMock(return_value={})),
+        ):
+            response = await admin_api.login_import_callback(
+                {"callback_url": "https://zcode.z.ai/app/oauth/login?code=unused"}
+            )
+
+        self.assertEqual(response["status"], "ready")
+        self.assertEqual(response["account"]["name"], "direct@example.com")
 
 
 if __name__ == "__main__":

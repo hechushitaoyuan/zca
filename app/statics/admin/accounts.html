@@ -109,26 +109,31 @@
     <!-- 授权登录 -->
     <div id="add-pane-login" style="display:none">
       <div class="dialog-body">
-        <div class="dialog-help">生成 ZCode 官方认证网址后，可复制到 Windows 无痕浏览器，或直接点击打开。服务端只保存最终 Coding Plan JWT，不保存网页 Cookie。</div>
+        <div class="dialog-help">已有 Windows ZCode/浏览器生成的回调网址，可直接粘贴导入；其中一次性授权码必须尚未被 ZCode 客户端消费。</div>
+        <div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:7px">直接粘贴官方回调网址</div>
+          <textarea class="input" id="login-callback-url" rows="3" placeholder="https://zcode.z.ai/app/oauth/login?redirect=…&code=…&state=…" style="font-size:12px;resize:vertical"></textarea>
+        </div>
+        <div class="live-dot" id="login-status">等待粘贴回调网址，或在下方生成新的认证链接</div>
+        <div style="border-top:1px solid var(--border);padding-top:12px">
+          <div class="dialog-help" style="margin-bottom:8px">还没有回调网址？可选：在本项目生成一条 10 分钟有效的官方认证链接。</div>
+        </div>
         <div id="login-idle">
-          <button onclick="startLogin()" id="login-start-btn" class="dialog-btn dialog-btn-primary w-full" style="height:40px">生成认证链接</button>
+          <button onclick="startLogin()" id="login-start-btn" class="dialog-btn w-full" style="height:40px">生成新的认证链接（可选）</button>
         </div>
         <div id="login-active" style="display:none">
-          <div class="dialog-label" style="margin-bottom:6px">1. 在本地浏览器打开 ZCode 官方认证网址</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:7px">ZCode 官方认证网址</div>
           <div style="display:flex;gap:8px;align-items:center">
             <input class="input" id="login-url" readonly style="font-size:12px">
             <button onclick="copyLoginUrl()" class="dialog-btn">复制</button>
             <button onclick="openLoginUrl()" class="dialog-btn dialog-btn-primary">打开认证页面</button>
           </div>
-          <div class="dialog-label" style="margin:16px 0 6px">2. 认证完成后，复制地址栏里的完整回调网址</div>
-          <div class="dialog-help" style="margin-bottom:8px">页面若询问是否打开 ZCode，请先选择取消；复制以 <code>https://zcode.z.ai/app/oauth/login</code> 开头的完整网址并粘贴到下面。</div>
-          <textarea class="input" id="login-callback-url" rows="3" placeholder="粘贴认证完成后的完整回调网址…" style="font-size:12px;resize:vertical"></textarea>
-          <div class="live-dot" id="login-status" style="margin-top:12px">等待完成本地浏览器认证…</div>
+          <div class="dialog-help" style="margin-top:8px">认证完成后若询问是否打开 ZCode，请先取消，再复制地址栏里的完整网址并粘贴到上方。</div>
         </div>
       </div>
       <div class="dialog-actions">
         <button onclick="cancelLogin()" class="dialog-btn">关闭</button>
-        <button onclick="completeLogin()" id="login-complete-btn" class="dialog-btn dialog-btn-primary" style="display:none">验证并导入</button>
+        <button onclick="completeLogin()" id="login-complete-btn" class="dialog-btn dialog-btn-primary">验证并导入</button>
       </div>
     </div>
   </div>
@@ -304,9 +309,9 @@ function resetLoginPane(){
   document.getElementById('login-idle').style.display='';
   document.getElementById('login-active').style.display='none';
   document.getElementById('login-start-btn').disabled=false;
-  document.getElementById('login-complete-btn').style.display='none';
   document.getElementById('login-complete-btn').disabled=false;
   document.getElementById('login-callback-url').value='';
+  setLoginStatus('等待粘贴回调网址，或在下方生成新的认证链接',false);
 }
 async function startLogin(){
   const btn=document.getElementById('login-start-btn');
@@ -318,7 +323,6 @@ async function startLogin(){
     document.getElementById('login-url').value=_loginUrl;
     document.getElementById('login-idle').style.display='none';
     document.getElementById('login-active').style.display='';
-    document.getElementById('login-complete-btn').style.display='';
     setLoginStatus(`认证链接有效期约 ${Math.max(1,Math.round(Number(d.expires_in||600)/60))} 分钟`,false);
   }catch(e){
     showToast('发起登录失败: '+e.message,'error');
@@ -327,13 +331,13 @@ async function startLogin(){
 }
 async function completeLogin(){
   const callbackUrl=document.getElementById('login-callback-url').value.trim();
-  if(!_loginFlowId)return showToast('请先生成认证链接','error');
   if(!callbackUrl)return showToast('请粘贴认证完成后的完整回调网址','error');
   const btn=document.getElementById('login-complete-btn');
   btn.disabled=true;
   setLoginStatus('正在校验回调并导入账号…',false);
   try{
-    await api('POST','/login/complete/'+_loginFlowId,{callback_url:callbackUrl});
+    const path=_loginFlowId?'/login/complete/'+_loginFlowId:'/login/import-callback';
+    await api('POST',path,{callback_url:callbackUrl});
     _loginFlowId='';
     showToast('登录成功，已导入账号池','success');
     closeModal('modal-add');
@@ -378,7 +382,7 @@ async function doEdit(){
 function doDelete(id){
   const a=allAccounts.find(x=>x.id===id);
   openConfirm('删除账号',`确认删除 <code>${esc(a?a.token_masked:id)}</code>？此操作不可撤销。`,async()=>{
-    try{await api('DELETE','/accounts',[id]);showToast('已删除','success');load();}
+    try{await api('DELETE','/accounts/'+encodeURIComponent(id));showToast('已删除','success');load();}
     catch(e){showToast('删除失败: '+e.message,'error');}
   });
 }
