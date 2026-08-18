@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import secrets
+import threading
 import time
+from dataclasses import dataclass
 
 import httpx
 
@@ -50,6 +53,40 @@ class InteractiveCaptchaRequired(SolverError):
     """真实浏览器要求用户完成交互式验证。"""
 
 
+class BrowserChallengeError(RuntimeError):
+    """本地浏览器验证会话不存在、过期或状态不允许。"""
+
+
+@dataclass
+class BrowserChallenge:
+    """一次性本地浏览器验证会话；verify_param 永不对外返回。"""
+
+    id: str
+    scene: str
+    region: str
+    prefix: str
+    created_at: float
+    expires_at: float
+    status: str = "pending"
+    ready_at: float | None = None
+    result_expires_at: float | None = None
+    ended_at: float | None = None
+    verify_param: str | None = None
+
+    def public_view(self, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        return {
+            "id": self.id,
+            "status": self.status,
+            "expires_in": max(0, int(self.expires_at - now)),
+            "result_expires_in": (
+                max(0, int(self.result_expires_at - now))
+                if self.result_expires_at is not None
+                else None
+            ),
+        }
+
+
 def _tail(raw: bytes | str | None, limit: int = DIAG_MAX_LEN) -> str:
     """把诊断输出压成单行并限长；绝不用于承载 verifyParam。"""
     if not raw:
@@ -64,6 +101,8 @@ class CaptchaManager:
         self._lock = asyncio.Lock()
         self._config_cache: dict | None = None
         self._config_cache_at: float = 0.0
+        self._browser_lock = threading.RLock()
+        self._browser_challenges: dict[str, BrowserChallenge] = {}
 
     # ── 配置 ─────────────────────────────────────────────────────────────────
     async def fetch_config(self) -> dict:
@@ -98,12 +137,134 @@ class CaptchaManager:
         串行化求解器，因为所有 Chromium 实例共享同一个持久化 profile。
         """
         async with self._lock:
+            browser_result = self._consume_browser_result()
+            if browser_result is not None:
+                logs.ok("captcha", "已消费 Windows 本地浏览器的一次性验证结果")
+                return browser_result
             config = await self.fetch_config()
             region = config.get("region") or _DEFAULT_REGION
             if config.get("enabled") is False:
                 return "", region
             param = await self._solve(config)
             return param, region
+
+    # ── Windows 本地浏览器人工验证 ──────────────────────────────────────────
+    async def create_browser_challenge(self) -> BrowserChallenge:
+        """创建随机、短期、可公开打开的一次性验证链接会话。"""
+        config = await self.fetch_config()
+        if config.get("enabled") is False:
+            raise BrowserChallengeError("当前 ZCode 配置未启用人机验证")
+        now = time.time()
+        challenge = BrowserChallenge(
+            id=secrets.token_urlsafe(24),
+            scene=str(config.get("sceneId") or _DEFAULT_SCENE),
+            region=str(config.get("region") or _DEFAULT_REGION),
+            prefix=str(config.get("prefix") or _DEFAULT_PREFIX),
+            created_at=now,
+            expires_at=now + settings.CAPTCHA_BROWSER_LINK_TTL,
+        )
+        with self._browser_lock:
+            self._prune_browser_challenges(now)
+            self._browser_challenges[challenge.id] = challenge
+        return challenge
+
+    def get_browser_challenge(self, challenge_id: str) -> BrowserChallenge:
+        now = time.time()
+        with self._browser_lock:
+            self._prune_browser_challenges(now)
+            challenge = self._browser_challenges.get(challenge_id)
+            if challenge is None:
+                raise BrowserChallengeError("验证链接不存在或已经失效")
+            self._expire_browser_challenge(challenge, now)
+            return challenge
+
+    def complete_browser_challenge(self, challenge_id: str, verify_param: str) -> dict:
+        """接收浏览器结果；只保存在内存，且不在响应或日志中回显。"""
+        verify_param = (verify_param or "").strip()
+        if not MIN_VERIFY_PARAM_LEN <= len(verify_param) <= 20_000:
+            raise BrowserChallengeError("浏览器返回的验证结果格式无效")
+        now = time.time()
+        with self._browser_lock:
+            challenge = self._browser_challenges.get(challenge_id)
+            if challenge is None:
+                raise BrowserChallengeError("验证链接不存在或已经失效")
+            self._expire_browser_challenge(challenge, now)
+            if challenge.status == "expired":
+                raise BrowserChallengeError("验证链接已经过期，请重新生成")
+            if challenge.status != "pending":
+                raise BrowserChallengeError("该验证链接已经完成或被消费")
+            challenge.status = "ready"
+            challenge.ready_at = now
+            challenge.result_expires_at = min(
+                challenge.expires_at,
+                now + settings.CAPTCHA_BROWSER_RESULT_TTL,
+            )
+            challenge.verify_param = verify_param
+            return challenge.public_view(now)
+
+    def cancel_browser_challenge(self, challenge_id: str) -> bool:
+        with self._browser_lock:
+            challenge = self._browser_challenges.get(challenge_id)
+            if challenge is None:
+                return False
+            challenge.verify_param = None
+            challenge.status = "cancelled"
+            challenge.ended_at = time.time()
+            return True
+
+    def _consume_browser_result(self) -> tuple[str, str] | None:
+        now = time.time()
+        with self._browser_lock:
+            self._prune_browser_challenges(now)
+            ready = sorted(
+                (
+                    item
+                    for item in self._browser_challenges.values()
+                    if item.status == "ready" and item.verify_param
+                ),
+                key=lambda item: item.ready_at or item.created_at,
+            )
+            if not ready:
+                return None
+            challenge = ready[0]
+            verify_param = challenge.verify_param
+            challenge.verify_param = None
+            challenge.status = "consumed"
+            challenge.ended_at = now
+            return verify_param, challenge.region
+
+    def _expire_browser_challenge(self, challenge: BrowserChallenge, now: float) -> None:
+        result_expired = (
+            challenge.status == "ready"
+            and challenge.result_expires_at is not None
+            and now >= challenge.result_expires_at
+        )
+        if now >= challenge.expires_at or result_expired:
+            challenge.verify_param = None
+            if challenge.status != "expired":
+                challenge.status = "expired"
+                challenge.ended_at = now
+
+    def _prune_browser_challenges(self, now: float) -> None:
+        for challenge in self._browser_challenges.values():
+            self._expire_browser_challenge(challenge, now)
+        # 已结束的会话保留一分钟供前端看到最终状态，其后清除；同时限制数量。
+        stale = [
+            key
+            for key, item in self._browser_challenges.items()
+            if item.status in {"expired", "cancelled", "consumed"}
+            and item.ended_at is not None
+            and now - item.ended_at > 60
+        ]
+        for key in stale:
+            self._browser_challenges.pop(key, None)
+        if len(self._browser_challenges) > 32:
+            ordered = sorted(
+                self._browser_challenges.values(), key=lambda item: item.created_at
+            )
+            for item in ordered[: len(self._browser_challenges) - 32]:
+                item.verify_param = None
+                self._browser_challenges.pop(item.id, None)
 
     async def _solve(self, config: dict) -> str:
         scene = config.get("sceneId") or _DEFAULT_SCENE
@@ -233,7 +394,10 @@ class CaptchaManager:
         """兼容调用点；verifyParam 不再缓存，因此无需额外失效。"""
 
     async def close(self) -> None:
-        pass
+        with self._browser_lock:
+            for challenge in self._browser_challenges.values():
+                challenge.verify_param = None
+            self._browser_challenges.clear()
 
 
 captcha_manager = CaptchaManager()

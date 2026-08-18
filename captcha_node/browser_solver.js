@@ -10,6 +10,10 @@ const CHROMIUM_PATH = process.env.ZCODE_CHROMIUM_PATH || '/usr/bin/chromium';
 const PROFILE_DIR = process.env.ZCODE_CHROMIUM_PROFILE_DIR || '/data/chromium-profile';
 const HEADLESS = process.env.ZCODE_CAPTCHA_BROWSER_HEADLESS === '1';
 const TIMEOUT_MS = Number.parseInt(process.env.ZCODE_CAPTCHA_BROWSER_TIMEOUT || '120000', 10);
+const INTERACTIVE_RETURN_MS = Number.parseInt(
+  process.env.ZCODE_CAPTCHA_INTERACTIVE_RETURN_MS || '1500',
+  10,
+);
 const PAGE_URL = 'https://zcode.z.ai/__zca_captcha__';
 const DIAG_MAX = 200;
 
@@ -79,7 +83,7 @@ async function main() {
     });
 
     const result = await page.evaluate(
-      ({ scene, region, prefix, timeoutMs }) =>
+      ({ scene, region, prefix, timeoutMs, interactiveReturnMs }) =>
         new Promise((resolve) => {
           let settled = false;
           const finish = (value) => {
@@ -97,7 +101,6 @@ async function main() {
           };
 
           let captchaInstance = null;
-          let interactiveShown = false;
           const readResult = (value) => {
             if (!value || typeof value !== 'object') return {};
             return {
@@ -158,7 +161,6 @@ async function main() {
                 complete({ status: 'error', reason: 'verification failed' });
                 return;
               }
-              interactiveShown = true;
               console.info('ZCA_INTERACTIVE_REQUIRED');
               try {
                 if (captchaInstance && typeof captchaInstance.show === 'function') {
@@ -168,18 +170,28 @@ async function main() {
                 }
               } catch (_error) {
                 complete({ status: 'error', reason: 'interactive display failed' });
+                return;
               }
+              // 交互挑战改由用户在 Windows 本地浏览器完成。快速退出，避免
+              // 一个待验证请求占用唯一账号长达数分钟。
+              window.setTimeout(
+                () => complete({ status: 'interactive' }),
+                Math.max(250, interactiveReturnMs),
+              );
             },
             onError() {
               complete({ status: 'error', reason: 'sdk error' });
             },
           });
 
-          window.setTimeout(() => {
-            if (interactiveShown) complete({ status: 'interactive' });
-          }, timeoutMs - 100);
         }),
-      { scene: SCENE, region: REGION, prefix: PREFIX, timeoutMs: TIMEOUT_MS },
+      {
+        scene: SCENE,
+        region: REGION,
+        prefix: PREFIX,
+        timeoutMs: TIMEOUT_MS,
+        interactiveReturnMs: INTERACTIVE_RETURN_MS,
+      },
     );
 
     if (result && result.status === 'success' && typeof result.verifyParam === 'string') {

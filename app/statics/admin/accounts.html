@@ -18,6 +18,10 @@
     </div>
     <div class="page-actions">
       <span class="live-dot" id="live-dot">实时监控中</span>
+      <button onclick="openBrowserCaptcha()" class="page-action-btn" id="btn-browser-captcha">
+        <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M9 3h6"/><path d="M10 3v5l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/><path d="M8 14h8"/></svg>
+        本地验证
+      </button>
       <button onclick="openImport()" class="page-action-btn">
         <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         导入
@@ -139,6 +143,27 @@
   </div>
 </div>
 
+<!-- Windows browser captcha modal -->
+<div class="modal-overlay" id="modal-captcha">
+  <div class="modal" style="width:min(560px,92vw)">
+    <div class="modal-title">Windows 本地浏览器验证</div>
+    <div class="dialog-body">
+      <div class="dialog-help">在你的 Windows Chrome/Edge 中打开下面的一次性链接并完成滑块。成功结果会回传到 VPS，只供下一次模型调用或账号测试使用一次。</div>
+      <div class="captcha-warning">请完成验证后立即回到 ZCode 重试。若 ZCode 同时测试两个模型，第二个请求还需要再生成一次验证结果。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="input" id="captcha-url" readonly placeholder="正在生成验证链接…" style="font-size:12px">
+        <button onclick="copyCaptchaUrl()" class="dialog-btn" id="captcha-copy-btn" disabled>复制</button>
+        <button onclick="openCaptchaUrl()" class="dialog-btn dialog-btn-primary" id="captcha-open-btn" disabled>打开</button>
+      </div>
+      <div class="captcha-session-status" id="captcha-session-status">正在获取当前验证配置…</div>
+    </div>
+    <div class="dialog-actions">
+      <button onclick="closeBrowserCaptcha()" class="dialog-btn">关闭</button>
+      <button onclick="startBrowserCaptcha()" class="dialog-btn" id="captcha-new-btn">重新生成</button>
+    </div>
+  </div>
+</div>
+
 <!-- Edit modal -->
 <div class="modal-overlay" id="modal-edit">
   <div class="modal">
@@ -174,6 +199,7 @@
 <script>
 let allAccounts=[], curFilter='all', _cb=null, _editId='', _timer=null;
 const refreshing=new Set(),testing=new Set();
+let _captchaId='',_captchaUrl='',_captchaPoll=null;
 
 const STATUS_LABEL={active:'正常',exhausted:'用完',cooling:'限流',invalid:'异常',disabled:'禁用'};
 
@@ -411,6 +437,65 @@ async function testOne(id){
   }catch(e){showToast('测试失败: '+e.message,'error');}
   finally{testing.delete(id);await load();}
 }
+
+/* ── Windows 本地浏览器人机验证 ── */
+async function openBrowserCaptcha(){
+  openModal('modal-captcha');
+  await startBrowserCaptcha();
+}
+async function startBrowserCaptcha(){
+  if(_captchaPoll){clearInterval(_captchaPoll);_captchaPoll=null;}
+  _captchaId='';_captchaUrl='';
+  const trigger=document.getElementById('btn-browser-captcha');
+  const newBtn=document.getElementById('captcha-new-btn');
+  trigger.disabled=true;newBtn.disabled=true;
+  document.getElementById('captcha-url').value='';
+  document.getElementById('captcha-copy-btn').disabled=true;
+  document.getElementById('captcha-open-btn').disabled=true;
+  setCaptchaStatus('正在获取当前验证配置…','pending');
+  try{
+    const d=await api('POST','/captcha/browser/start');
+    _captchaId=d.id;
+    _captchaUrl=new URL(d.path,location.origin).href;
+    document.getElementById('captcha-url').value=_captchaUrl;
+    document.getElementById('captcha-copy-btn').disabled=false;
+    document.getElementById('captcha-open-btn').disabled=false;
+    setCaptchaStatus(`链接已生成，约 ${Math.max(1,Math.ceil(Number(d.expires_in||600)/60))} 分钟内有效。请复制到 Windows 浏览器打开。`,'pending');
+    _captchaPoll=setInterval(pollBrowserCaptcha,1500);
+  }catch(e){
+    setCaptchaStatus('生成失败：'+e.message,'error');
+  }finally{
+    trigger.disabled=false;newBtn.disabled=false;
+  }
+}
+async function pollBrowserCaptcha(){
+  if(!_captchaId)return;
+  try{
+    const d=await api('GET','/captcha/browser/'+encodeURIComponent(_captchaId));
+    if(d.status==='ready'){
+      setCaptchaStatus(`验证完成，结果等待使用；请在 ${Math.max(1,Number(d.result_expires_in)||1)} 秒内立即重试模型。`,'ready');
+    }else if(d.status==='consumed'){
+      setCaptchaStatus('验证结果已被一个模型请求消费。如需再次调用，请重新生成验证。','consumed');
+      clearCaptchaPoll();
+    }else if(d.status==='expired'||d.status==='cancelled'){
+      setCaptchaStatus('验证链接或结果已经失效，请重新生成。','error');
+      clearCaptchaPoll();
+    }else{
+      setCaptchaStatus(`等待你在 Windows 浏览器完成验证（链接剩余 ${Math.max(0,Number(d.expires_in)||0)} 秒）…`,'pending');
+    }
+  }catch(e){setCaptchaStatus('状态查询失败：'+e.message,'error');clearCaptchaPoll();}
+}
+function clearCaptchaPoll(){if(_captchaPoll){clearInterval(_captchaPoll);_captchaPoll=null;}}
+function setCaptchaStatus(text,state){
+  const el=document.getElementById('captcha-session-status');
+  el.textContent=text;el.dataset.state=state||'pending';
+}
+function copyCaptchaUrl(){
+  if(!_captchaUrl)return;
+  navigator.clipboard.writeText(_captchaUrl).then(()=>showToast('验证链接已复制','success')).catch(()=>showToast('复制失败，请手动选择网址','error'));
+}
+function openCaptchaUrl(){if(_captchaUrl)window.open(_captchaUrl,'_blank','noopener');}
+function closeBrowserCaptcha(){clearCaptchaPoll();closeModal('modal-captcha');}
 async function refreshAll(){
   showToast('正在刷新全部额度…','info');
   try{const d=await api('POST','/accounts/refresh',{all:true});showToast(`刷新完成：成功 ${d.summary.ok}，失败 ${d.summary.fail}`,'success');load();}
@@ -444,7 +529,7 @@ function fmtDate(d){if(!d)return'—';const dt=new Date(d*1000);return isNaN(dt)
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 function openConfirm(title,body,cb){_cb=async()=>{closeModal('modal-confirm');await cb();};document.getElementById('confirm-title').textContent=title;document.getElementById('confirm-body').innerHTML=body;openModal('modal-confirm');}
-document.querySelectorAll('.modal-overlay').forEach(el=>el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('open');if(el.id==='modal-add')cancelLoginSession(true);}}));
+document.querySelectorAll('.modal-overlay').forEach(el=>el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('open');if(el.id==='modal-add')cancelLoginSession(true);if(el.id==='modal-captcha')clearCaptchaPoll();}}));
 </script>
 </body>
 </html>

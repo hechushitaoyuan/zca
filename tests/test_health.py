@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import unittest
+import time
 from unittest.mock import patch
 
 from app import settings
+from app.captcha import BrowserChallenge
 from app.routes import pages
 
 
@@ -42,6 +44,32 @@ class HealthMetaTests(unittest.IsolatedAsyncioTestCase):
     async def test_meta_preserves_version_key_for_header_js(self) -> None:
         body = await pages.meta()
         self.assertIn("version", body)
+
+    async def test_local_browser_captcha_page_embeds_public_config_only(self) -> None:
+        now = time.time()
+        challenge = BrowserChallenge(
+            id="safe-random-id",
+            scene="scene-x",
+            region="hzn",
+            prefix="prefix-x",
+            created_at=now,
+            expires_at=now + 600,
+        )
+
+        class FakeCaptchaManager:
+            @staticmethod
+            def get_browser_challenge(challenge_id):
+                self.assertEqual(challenge_id, challenge.id)
+                return challenge
+
+        with patch.object(pages, "captcha_manager", FakeCaptchaManager()):
+            response = await pages.browser_captcha(challenge.id)
+        body = response.body.decode("utf-8")
+        self.assertIn("AliyunCaptcha.js", body)
+        self.assertIn(challenge.id, body)
+        self.assertIn("scene-x", body)
+        self.assertIn("Referrer-Policy", response.headers)
+        self.assertNotIn("verify_param", response.headers)
 
 
 if __name__ == "__main__":

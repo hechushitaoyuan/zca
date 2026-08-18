@@ -87,6 +87,26 @@ class FakeCaptcha:
 
 
 class GatewayStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pool_error_reports_busy_without_claiming_quota_exhausted(self) -> None:
+        class BusyStore:
+            @staticmethod
+            def pool_state(_provider):
+                return {
+                    "total": 1,
+                    "selectable": 0,
+                    "busy": 1,
+                    "cooling": 0,
+                    "exhausted": 0,
+                    "invalid": 0,
+                    "disabled": 0,
+                }
+
+        with patch.object(gateway, "store", BusyStore()):
+            error_type, message = gateway._pool_error("zai")
+        self.assertEqual(error_type, "accounts_busy")
+        self.assertIn("处理其他请求", message)
+        self.assertNotIn("额度", message)
+
     async def test_success_sse_is_not_buffered_and_preserves_stream_false_request(self) -> None:
         upstream = FakeResponse(
             200,

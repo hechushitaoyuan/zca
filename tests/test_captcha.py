@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from app import captcha
 from app.captcha import (
+    BrowserChallengeError,
     CaptchaManager,
     InteractiveCaptchaRequired,
     SolverError,
@@ -73,6 +74,47 @@ def make_manager(recorder, *, scene="11xygtvd", region="sgp", prefix="no8xfe") -
 
 
 class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
+    async def test_windows_browser_result_is_memory_only_and_consumed_once(self) -> None:
+        recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
+        mgr = make_manager(recorder, scene="local-scene", region="hzn", prefix="local-prefix")
+        challenge = await mgr.create_browser_challenge()
+
+        public = mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+        self.assertEqual(public["status"], "ready")
+        self.assertNotIn(VALID_PARAM, str(public))
+        self.assertNotIn("verify_param", public)
+
+        first = await mgr.get_verify_param()
+        self.assertEqual(first, (VALID_PARAM, "hzn"))
+        self.assertEqual(recorder.calls, [], "本地结果可用时不应启动 VPS Chromium")
+        self.assertEqual(mgr.get_browser_challenge(challenge.id).status, "consumed")
+
+        second = await mgr.get_verify_param()
+        self.assertEqual(second, (VALID_PARAM, "hzn"))
+        self.assertEqual(len(recorder.calls), 1, "结果只能消费一次，第二次应重新求解")
+
+    async def test_windows_browser_challenge_rejects_bad_or_repeated_result(self) -> None:
+        recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
+        mgr = make_manager(recorder)
+        challenge = await mgr.create_browser_challenge()
+        with self.assertRaises(BrowserChallengeError):
+            mgr.complete_browser_challenge(challenge.id, "short")
+        mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+        with self.assertRaises(BrowserChallengeError):
+            mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+
+    async def test_windows_browser_result_expires_without_being_consumed(self) -> None:
+        recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
+        mgr = make_manager(recorder)
+        challenge = await mgr.create_browser_challenge()
+        mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+        challenge.result_expires_at = 0
+
+        self.assertEqual(mgr.get_browser_challenge(challenge.id).status, "expired")
+        result = await mgr.get_verify_param()
+        self.assertEqual(result, (VALID_PARAM, "sgp"))
+        self.assertEqual(len(recorder.calls), 1)
+
     async def test_each_request_gets_a_fresh_verify_param(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)

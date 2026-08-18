@@ -62,29 +62,32 @@ docker compose logs --tail=100 zca
 ### 3.1 交互式验证码（仅风控触发时）
 
 镜像默认在 ARM64/AMD64 容器内运行真实 Chromium。无痕验证通过时无需操作；若上游要求
-点选/滑块，挑战会显示在容器的 noVNC 桌面（宿主机仅监听 `127.0.0.1:6080`）。
+点选/滑块，容器求解器会快速释放账号并提示使用 Windows 本地浏览器验证，避免单个请求
+占用账号数分钟。
 
-从自己的电脑建立 SSH 隧道：
+1. 登录后台账号池，点击右上角“本地验证”。
+2. 复制一次性链接到自己的 Windows Chrome/Edge，或直接点击“打开”。
+3. 在正常浏览器窗口完成人工滑块；页面显示“验证完成”后立即回到 ZCode 重试模型。
+4. 每条结果只能消费一次。如果 ZCode 同时探测两个模型，需要重新生成并再验证一次。
 
-```bash
-ssh -L 6080:127.0.0.1:6080 <VPS用户>@<VPS地址>
-```
+链接默认有效 10 分钟，完成后的结果默认只等待 120 秒，分别可通过
+`ZCODE_CAPTCHA_BROWSER_LINK_TTL`、`ZCODE_CAPTCHA_BROWSER_RESULT_TTL` 调整。随机链接本身是
+短期访问凭据，应只发给本人；`verifyParam` 只在服务进程内存中保存，不写数据库、日志或 API
+响应，消费或过期后立即清除。
 
-随后打开 `http://127.0.0.1:6080/vnc.html?autoconnect=1&resize=remote`。先保持该页面打开，
-再发起一次 `/v1/messages` 请求；挑战出现后在 120 秒内人工完成。验证码桌面没有独立密码，
-安全性依赖 SSH 隧道，因此 **6080 必须保持回环绑定，禁止暴露到公网**。
+阿里云可能把验证结果与浏览器网络环境绑定。因此 Windows 直连生成的结果能否被 VPS 请求接受，
+最终以上游返回为准；本功能提供真实人工验证链路，不绕过或伪造验证。如果直连结果被拒绝，
+可让 Windows 浏览器通过该 VPS 的受控代理出口再打开同一链接，使验证与模型请求出口一致。
 
-如果 VPS 与操作电脑位于同一个受控 Tailscale 网络，也可在 VPS 的 `.env` 设置：
+容器 noVNC 仍可用于诊断 Chromium 页面，但不再作为人工滑块的主要流程。若启用 6080，只能绑定
+回环或明确的 Tailscale IP，禁止使用 `0.0.0.0`：
 
 ```ini
 ZCA_NOVNC_BIND_IP=<VPS 的 Tailscale IPv4>
 ZCA_NOVNC_PORT=6080
 ```
 
-重新执行 `docker compose up -d` 后，使用
-`http://<Tailscale-IP>:6080/vnc.html?autoconnect=1&resize=remote` 访问。`resize=remote` 能保持
-远程桌面与鼠标坐标一致，适合人工拖动验证；同时保持浏览器缩放为 100%。该地址只应绑定明确的
-Tailscale IP，禁止设置为 `0.0.0.0`；同一 Tailnet 内的访问范围由 Tailscale ACL 控制。
+重新执行 `docker compose up -d` 后，同一 Tailnet 内可查看诊断桌面；访问范围由 Tailscale ACL 控制。
 
 ### 3.2 Z.ai 网页授权登录
 

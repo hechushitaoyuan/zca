@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse
 from .. import settings
 from ..agent import build_request
 from ..auth_admin import verify_admin_key
-from ..captcha import InteractiveCaptchaRequired, captcha_manager
+from ..captcha import BrowserChallengeError, InteractiveCaptchaRequired, captcha_manager
 from ..models import PROVIDERS, FailureKind, Status
 from ..oauth import OAuthError, ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
@@ -70,6 +70,36 @@ async def status_info():
             for p in PROVIDERS
         },
     }
+
+
+# ── Windows 本地浏览器人机验证 ──────────────────────────────────────────────
+@router.post("/captcha/browser/start")
+async def start_browser_captcha():
+    try:
+        challenge = await captcha_manager.create_browser_challenge()
+    except BrowserChallengeError as err:
+        raise HTTPException(409, str(err)) from err
+    except Exception as err:  # noqa: BLE001
+        raise HTTPException(503, "无法获取当前 ZCode 验证配置") from err
+    return {
+        **challenge.public_view(),
+        "path": f"/captcha/{challenge.id}",
+    }
+
+
+@router.get("/captcha/browser/{challenge_id}")
+async def get_browser_captcha(challenge_id: str):
+    try:
+        return captcha_manager.get_browser_challenge(challenge_id).public_view()
+    except BrowserChallengeError as err:
+        raise HTTPException(404, str(err)) from err
+
+
+@router.delete("/captcha/browser/{challenge_id}")
+async def cancel_browser_captcha(challenge_id: str):
+    if not captcha_manager.cancel_browser_challenge(challenge_id):
+        raise HTTPException(404, "验证会话不存在")
+    return {"cancelled": True}
 
 
 # ── 新增账号 ─────────────────────────────────────────────────────────────────
@@ -240,7 +270,7 @@ async def test_account(account_id: str, request: Request, payload: dict = Body(.
                         "ok": False,
                         "status_code": 409,
                         "type": "captcha_interactive_required",
-                        "message": "需要在 noVNC 中完成人机验证后重试",
+                        "message": "需要人工验证：请先在账号池生成“本地验证”链接，完成后立即重试",
                     }
                 except Exception:  # noqa: BLE001
                     record_request(request_meta, account, 503, error_type="captcha_error")

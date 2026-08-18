@@ -96,7 +96,7 @@ graph TD
 | Account Model | `app/models.py` | `Account` 数据类、`Status` 状态、可选中判定、脱敏视图 |
 | Request Builder | `app/agent.py` | 按凭证选上游端点、组装请求头(含 `X-Aliyun-Captcha-Verify-Param`) |
 | Quota Monitor | `app/quota.py` | 单账号额度查询 + 状态判定 + 后台周期刷新任务 |
-| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、一次性参数/串行/重试 |
+| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、Windows 一次性验证会话/串行/重试 |
 | Captcha Solver | `captcha_node/browser_solver.js` | 真实 Chromium 跑阿里云官方 SDK，输出 `verifyParam` |
 | OAuth Flow | `app/oauth.py` | 生成官方认证链接 → 校验粘贴的桥接/深链接回调 → token 兑换 |
 | Settings | `app/settings.py` | 环境变量 / 默认值 / 路径 / 上游端点 |
@@ -216,6 +216,7 @@ sequenceDiagram
     participant CM as Captcha Manager (Python)
     participant CFG as zcode.z.ai/client/configs
     participant SV as Node Solver (Chromium)
+    participant WIN as Windows 本地浏览器
     participant CDN as o.alicdn.com
     participant ALI as 阿里云无痕服务
 
@@ -228,10 +229,18 @@ sequenceDiagram
     ALI-->>SV: success(verifyParam)
     SV-->>CM: stdout: VERIFY_PARAM=<param>
     CM->>CM: 交付本次请求专用参数
+    alt 风控要求交互滑块
+        SV-->>CM: interactive-required（快速释放账号）
+        CM->>WIN: 后台生成随机短期验证链接
+        WIN->>ALI: 用户人工完成滑块
+        WIN-->>CM: 回传一次性 verifyParam
+        CM->>CM: 下一次模型请求消费并立即清除
+    end
 ```
 
 - `verifyParam` 实为 `base64(JSON{certifyId, sceneId, isSign, securityToken})`,由阿里云服务端签发。
 - `verifyParam` 是一次性参数，禁止跨请求复用；F018/HTTP 400 表示参数被重复消费。
+- Windows 人工验证结果只在内存中短暂排队，不持久化、不经管理 API 回显；链接和结果分别过期。
 - **串行求解**:同一时刻仅跑一个求解进程(`asyncio.Lock`)，避免多个 Chromium 争用 profile；
   **重试**:`CAPTCHA_SOLVE_RETRIES`(默认 4)次。
 - 仅 zai + JWT 账号需要;API Key 账号走 `api.z.ai` 回退端点,无需验证码。

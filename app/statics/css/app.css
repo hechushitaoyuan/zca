@@ -75,6 +75,7 @@ select.input{cursor:pointer;padding-right:28px;appearance:none;background-image:
 .page-actions{display:flex;gap:8px;align-items:center}
 .page-action-btn{height:34px;padding:0 14px;border-radius:999px;display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;border:1px solid #e6e6e6;background:#fafafa;color:#444;transition:background .15s,border-color .15s}
 .page-action-btn:hover{background:#f3f3f3;border-color:#dcdcdc}
+.page-action-btn:disabled{opacity:.55;cursor:wait}
 .page-action-btn svg{stroke:currentColor;fill:none}
 .page-action-btn-primary{background:#111;border-color:#111;color:#fff}
 .page-action-btn-primary:hover{background:#222;border-color:#222}
@@ -179,10 +180,16 @@ tr:hover td{background:#fdfdfd}
 .dialog-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .dialog-btn{height:34px;padding:0 16px;border-radius:999px;background:#fafafa;color:#444;font-size:13px;font-weight:600}
 .dialog-btn:hover{background:#f3f3f3}
+.dialog-btn:disabled{opacity:.5;cursor:not-allowed}
 .dialog-btn-primary{background:#111;color:#fff}
 .dialog-btn-primary:hover{background:#222}
 .dialog-btn-danger{color:#b42318;background:#fff5f4}
 .dialog-btn-danger:hover{background:#feeceb}
+.captcha-warning{padding:10px 12px;border-radius:9px;background:#fff8e8;color:#8a6420;font-size:12px;line-height:1.6}
+.captcha-session-status{padding:11px 12px;border-radius:9px;background:#f5f5f5;color:#666;font-size:12px;line-height:1.55}
+.captcha-session-status[data-state="ready"]{background:#edf8f1;color:#187044}
+.captcha-session-status[data-state="consumed"]{background:#eef4ff;color:#315f9d}
+.captcha-session-status[data-state="error"]{background:#fff1f0;color:#b42318}
 
 /* Settings card */
 .settings-card{background:#fff;border-radius:14px;padding:22px;margin-bottom:16px;max-width:640px}

@@ -10,7 +10,7 @@ import httpx
 from starlette.requests import Request
 
 from app import settings
-from app.models import Account
+from app.models import Account, Status
 from app.routes import admin_api, gateway, pages
 from app.store import Store
 from app.traffic import UsageTracker, account_display_name
@@ -112,6 +112,27 @@ class RequestLogStoreTests(unittest.TestCase):
         public = restored.public_view()
         self.assertTrue(public["oauth_saved"])
         self.assertNotIn("saved-sensitive-token", str(public))
+
+    def test_deleted_account_cannot_be_resurrected_by_stale_request(self) -> None:
+        account = self.store.add_account(
+            "zai", "deleted@example.com", "header.payload.signature"
+        )
+        self.assertTrue(self.store.remove_account("zai", account.id))
+        account.last_error = "late request finished"
+        self.assertFalse(self.store.update_account(account))
+        self.assertIsNone(Store().find("zai", account.id))
+
+    def test_pool_state_distinguishes_busy_from_exhausted(self) -> None:
+        busy = self.store.add_account("zai", "busy@example.com", "one.two.three")
+        exhausted = self.store.add_account(
+            "zai", "empty@example.com", "four.five.six"
+        )
+        busy.active_requests = busy.concurrency_limit
+        exhausted.status = Status.EXHAUSTED
+        state = self.store.pool_state("zai")
+        self.assertEqual(state["busy"], 1)
+        self.assertEqual(state["exhausted"], 1)
+        self.assertEqual(state["selectable"], 0)
 
 
 class TrafficHelpersTests(unittest.TestCase):

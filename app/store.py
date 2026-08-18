@@ -236,10 +236,14 @@ class Store:
             self._delete_account(target.id)
             return True
 
-    def update_account(self, account: Account) -> None:
-        """持久化某个账号的当前状态。"""
+    def update_account(self, account: Account) -> bool:
+        """持久化当前仍在池中的账号，避免已删除账号被旧请求复活。"""
         with self._lock:
+            current = self._find_locked(account.provider, account.id)
+            if current is not account:
+                return False
             self._persist_account(account)
+            return True
 
     def set_enabled(self, provider: str, id_or_name: str, enabled: bool) -> bool:
         with self._lock:
@@ -282,6 +286,36 @@ class Store:
                 return False
             account.active_requests += 1
             return True
+
+    def pool_state(self, provider: str) -> dict[str, int]:
+        """返回调度状态计数，用于区分忙碌、冷却、失效和额度耗尽。"""
+        now = time.time()
+        state = {
+            "total": 0,
+            "selectable": 0,
+            "busy": 0,
+            "cooling": 0,
+            "exhausted": 0,
+            "invalid": 0,
+            "disabled": 0,
+        }
+        with self._lock:
+            for account in self._accounts.get(provider, []):
+                state["total"] += 1
+                effective = account.effective_status(now)
+                if not account.enabled or effective == Status.DISABLED:
+                    state["disabled"] += 1
+                elif effective == Status.INVALID:
+                    state["invalid"] += 1
+                elif effective == Status.EXHAUSTED:
+                    state["exhausted"] += 1
+                elif effective == Status.COOLING:
+                    state["cooling"] += 1
+                elif account.active_requests >= max(1, account.concurrency_limit):
+                    state["busy"] += 1
+                else:
+                    state["selectable"] += 1
+        return state
 
     # ── 请求日志 ─────────────────────────────────────────────────────────────
     def record_request_log(

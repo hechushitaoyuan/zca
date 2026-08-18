@@ -73,6 +73,12 @@ CHROMIUM_PROFILE_DIR = _resolve_path(
 )
 CAPTCHA_BROWSER_HEADLESS = os.getenv("ZCODE_CAPTCHA_BROWSER_HEADLESS", "0") == "1"
 CAPTCHA_BROWSER_TIMEOUT = _int("ZCODE_CAPTCHA_BROWSER_TIMEOUT", 120_000)
+# Windows 本地浏览器人工验证：链接有效期与结果可消费期（秒）。验证结果
+# 只在进程内存中短暂保存，并且只允许被一个上游请求消费一次。
+CAPTCHA_BROWSER_LINK_TTL = max(60, _int("ZCODE_CAPTCHA_BROWSER_LINK_TTL", 600))
+CAPTCHA_BROWSER_RESULT_TTL = max(15, _int("ZCODE_CAPTCHA_BROWSER_RESULT_TTL", 120))
+# 唯一账号正在被另一个短请求占用时，网关短暂等待，避免误报额度耗尽。
+ACCOUNT_BUSY_WAIT_TIMEOUT = max(0, _int("ZCODE_ACCOUNT_BUSY_WAIT_TIMEOUT", 5))
 
 # Z.ai OAuth 3.7.7：认证链接在用户本地浏览器打开，回调网址粘贴回后台兑换。
 OAUTH_FLOW_TIMEOUT = _int("ZCODE_OAUTH_TIMEOUT", 600)  # seconds
