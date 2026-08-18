@@ -87,6 +87,26 @@ class FakeCaptcha:
 
 
 class GatewayStreamingTests(unittest.IsolatedAsyncioTestCase):
+    async def test_pool_error_reports_busy_without_claiming_quota_exhausted(self) -> None:
+        class BusyStore:
+            @staticmethod
+            def pool_state(_provider):
+                return {
+                    "total": 1,
+                    "selectable": 0,
+                    "busy": 1,
+                    "cooling": 0,
+                    "exhausted": 0,
+                    "invalid": 0,
+                    "disabled": 0,
+                }
+
+        with patch.object(gateway, "store", BusyStore()):
+            error_type, message = gateway._pool_error("zai")
+        self.assertEqual(error_type, "accounts_busy")
+        self.assertIn("处理其他请求", message)
+        self.assertNotIn("额度", message)
+
     async def test_success_sse_is_not_buffered_and_preserves_stream_false_request(self) -> None:
         upstream = FakeResponse(
             200,
@@ -212,6 +232,40 @@ class GatewayCaptchaWiringTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             client.sent_headers[1].get("X-Aliyun-Captcha-Verify-Region"), "hzn"
         )
+        self.assertEqual(account.active_requests, 0)
+
+    async def test_reused_captcha_400_retries_with_a_fresh_param(self) -> None:
+        client = SequenceClient([
+            FakeResponse(
+                400,
+                b'{"code":"F018","message":"CaptchaVerifyParam reused"}',
+                "application/json",
+            ),
+            FakeResponse(200, b"event: message_stop\ndata: {}\n\n", "text/event-stream"),
+        ])
+        store = FakeStore()
+        fake_captcha = FakeCaptcha()
+        account = self._jwt_account("captcha-reused")
+
+        with (
+            patch.object(gateway.httpx, "AsyncClient", return_value=client),
+            patch.object(gateway, "store", store),
+            patch.object(gateway, "captcha_manager", fake_captcha),
+            patch.object(gateway, "_safe_refresh", no_refresh),
+        ):
+            response = await gateway._try_account(
+                "test",
+                account,
+                {"model": "glm-5.3", "stream": False, "messages": []},
+                {},
+                3000,
+                True,
+            )
+            chunks = [chunk async for chunk in response.body_iterator]
+
+        self.assertEqual(b"".join(chunks), b"event: message_stop\ndata: {}\n\n")
+        self.assertEqual(fake_captcha.solve_calls, 2)
+        self.assertEqual(fake_captcha.invalidate_calls, 1)
         self.assertEqual(account.active_requests, 0)
 
     async def test_captcha_403_twice_switches_account(self) -> None:

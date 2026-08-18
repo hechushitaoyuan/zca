@@ -2,21 +2,39 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
+import secrets
 import time
+from dataclasses import dataclass
 
-from fastapi import APIRouter, Body, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
+from .. import settings
+from ..agent import build_request
 from ..auth_admin import verify_admin_key
-from ..models import PROVIDERS, Status
-from ..oauth import ZaiAuthFlow
+from ..captcha import BrowserChallengeError, InteractiveCaptchaRequired, captcha_manager
+from ..models import PROVIDERS, FailureKind, Status
+from ..oauth import OAuthError, ZaiAuthFlow
 from ..quota import fetch_quota, refresh_accounts
 from ..store import store
+from ..traffic import UsageTracker, record_request
+from ..upstream_errors import classify_upstream_failure
 
 router = APIRouter(prefix="/admin/api", dependencies=[Depends(verify_admin_key)])
 
-# 进行中的 OAuth 登录流程（flow_id -> ZaiAuthFlow），需跨请求保留 poll_token
-_login_flows: dict[str, ZaiAuthFlow] = {}
+
+@dataclass
+class _LoginSession:
+    flow: ZaiAuthFlow
+    created_at: float
+
+
+# OAuth 授权链接由用户在本地浏览器打开；同一时刻只保留一个待完成流程。
+_login_flows: dict[str, _LoginSession] = {}
+_TEST_MODELS = {"GLM-5.3", "GLM-5.2", "GLM-5-Turbo"}
 
 
 # ── 鉴权探针 ─────────────────────────────────────────────────────────────────
@@ -54,6 +72,36 @@ async def status_info():
     }
 
 
+# ── Windows 本地浏览器人机验证 ──────────────────────────────────────────────
+@router.post("/captcha/browser/start")
+async def start_browser_captcha():
+    try:
+        challenge = await captcha_manager.create_browser_challenge()
+    except BrowserChallengeError as err:
+        raise HTTPException(409, str(err)) from err
+    except Exception as err:  # noqa: BLE001
+        raise HTTPException(503, "无法获取当前 ZCode 验证配置") from err
+    return {
+        **challenge.public_view(),
+        "path": f"/captcha/{challenge.id}",
+    }
+
+
+@router.get("/captcha/browser/{challenge_id}")
+async def get_browser_captcha(challenge_id: str):
+    try:
+        return captcha_manager.get_browser_challenge(challenge_id).public_view()
+    except BrowserChallengeError as err:
+        raise HTTPException(404, str(err)) from err
+
+
+@router.delete("/captcha/browser/{challenge_id}")
+async def cancel_browser_captcha(challenge_id: str):
+    if not captcha_manager.cancel_browser_challenge(challenge_id):
+        raise HTTPException(404, "验证会话不存在")
+    return {"cancelled": True}
+
+
 # ── 新增账号 ─────────────────────────────────────────────────────────────────
 @router.post("/accounts")
 async def add_accounts(payload: dict = Body(...)):
@@ -88,6 +136,17 @@ async def delete_accounts(ids: list[str] = Body(...)):
         if acc and store.remove_account(acc.provider, aid):
             deleted += 1
     return {"deleted": deleted}
+
+
+@router.delete("/accounts/{account_id}")
+async def delete_account(account_id: str):
+    """删除单个账号；使用路径参数避免代理丢弃 DELETE 请求体。"""
+    acc = store.find_any(account_id)
+    if not acc:
+        raise HTTPException(404, "账号不存在")
+    if not store.remove_account(acc.provider, account_id):
+        raise HTTPException(409, "账号删除失败，请重试")
+    return {"deleted": 1}
 
 
 # ── 编辑账号 ─────────────────────────────────────────────────────────────────
@@ -145,61 +204,274 @@ async def refresh_one(account_id: str):
     return {"ok": "error" not in res, "result": res, "account": acc.public_view()}
 
 
-# ── OAuth 登录（Z.AI）────────────────────────────────────────────────────────
+# ── 逐账号模型调用测试 ──────────────────────────────────────────────────────
+@router.post("/accounts/{account_id}/test")
+async def test_account(account_id: str, request: Request, payload: dict = Body(...)):
+    account = store.find_any(account_id)
+    if not account:
+        raise HTTPException(404, "账号不存在")
+    model = str(payload.get("model") or "GLM-5.3").strip()
+    model = next((item for item in _TEST_MODELS if item.lower() == model.lower()), "")
+    if not model:
+        raise HTTPException(400, "不支持的测试模型")
+    if not store.reserve_specific(account):
+        raise HTTPException(409, "账号正在处理其他请求，请稍后再试")
+
+    request_meta = {
+        "request_id": f"test-{secrets.token_hex(3)}",
+        "started": time.monotonic(),
+        "method": "TEST",
+        "path": request.url.path,
+        "model": model,
+        "protocol": "账号测试",
+    }
+    test_body = {
+        "model": model,
+        "max_tokens": 16,
+        "stream": False,
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Reply with exactly: OK"}]}
+        ],
+    }
+    try:
+        for attempt in range(2):
+            verify_param = None
+            verify_region = "sgp"
+            if account.provider == "zai" and account.mode == "jwt":
+                try:
+                    verify_param, verify_region = await asyncio.wait_for(
+                        captcha_manager.get_verify_param(request.url.port or settings.PORT),
+                        timeout=settings.ACCOUNT_TEST_CAPTCHA_TIMEOUT,
+                    )
+                except asyncio.TimeoutError:
+                    record_request(
+                        request_meta,
+                        account,
+                        504,
+                        error_type="captcha_timeout",
+                    )
+                    return {
+                        "ok": False,
+                        "status_code": 504,
+                        "type": "captcha_timeout",
+                        "message": (
+                            "测试验证码生成超时"
+                            f"（{settings.ACCOUNT_TEST_CAPTCHA_TIMEOUT} 秒）"
+                        ),
+                    }
+                except InteractiveCaptchaRequired:
+                    record_request(
+                        request_meta,
+                        account,
+                        409,
+                        error_type="captcha_interactive_required",
+                    )
+                    return {
+                        "ok": False,
+                        "status_code": 409,
+                        "type": "captcha_interactive_required",
+                        "message": "需要人工验证：请先在账号池生成“本地验证”链接，完成后立即重试",
+                    }
+                except Exception:  # noqa: BLE001
+                    record_request(request_meta, account, 503, error_type="captcha_error")
+                    return {
+                        "ok": False,
+                        "status_code": 503,
+                        "type": "captcha_error",
+                        "message": "无法完成人机验证",
+                    }
+
+            try:
+                url, headers, upstream_body = build_request(
+                    account,
+                    test_body,
+                    verify_param,
+                    {},
+                    verify_region,
+                )
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(
+                        float(settings.ACCOUNT_TEST_UPSTREAM_TIMEOUT),
+                        connect=min(15.0, float(settings.ACCOUNT_TEST_UPSTREAM_TIMEOUT)),
+                    )
+                ) as client:
+                    response = await client.post(
+                        url,
+                        headers=headers,
+                        content=json.dumps(upstream_body, ensure_ascii=False).encode("utf-8"),
+                    )
+            except (httpx.HTTPError, RuntimeError):
+                account.mark_failure(FailureKind.TRANSPORT, "账号测试连接失败")
+                account.last_checked_at = time.time()
+                store.update_account(account)
+                record_request(request_meta, account, 503, error_type=FailureKind.TRANSPORT)
+                return {
+                    "ok": False,
+                    "status_code": 503,
+                    "type": FailureKind.TRANSPORT,
+                    "message": "连接上游失败",
+                }
+
+            usage = UsageTracker()
+            usage.feed(response.content)
+            if 200 <= response.status_code < 300:
+                account.mark_success()
+                account.last_checked_at = time.time()
+                store.update_account(account)
+                record_request(request_meta, account, response.status_code, usage=usage)
+                return {
+                    "ok": True,
+                    "status_code": response.status_code,
+                    "model": model,
+                    "message": "模型调用成功",
+                }
+
+            failure = (
+                classify_upstream_failure(response.status_code, response.text)
+                or FailureKind.UPSTREAM
+            )
+            if failure == FailureKind.CAPTCHA and attempt == 0 and account.mode == "jwt":
+                captcha_manager.invalidate()
+                continue
+            if failure == FailureKind.AUTH:
+                account.mark_failure(failure, "账号测试鉴权失败", status=Status.INVALID)
+            elif failure == FailureKind.EXHAUSTED:
+                account.mark_failure(failure, "账号测试额度用完", status=Status.EXHAUSTED)
+            elif failure in (FailureKind.RATE_LIMIT, FailureKind.RISK_3012):
+                account.start_cooldown(
+                    kind=failure,
+                    reason="账号测试触发上游风控",
+                    base_seconds=settings.COOLING_SECONDS,
+                    max_seconds=settings.RISK_3012_COOLDOWN_MAX,
+                )
+            else:
+                account.mark_failure(failure, f"账号测试 HTTP {response.status_code}")
+            account.last_checked_at = time.time()
+            store.update_account(account)
+            record_request(
+                request_meta,
+                account,
+                response.status_code,
+                usage=usage,
+                error_type=failure,
+            )
+            return {
+                "ok": False,
+                "status_code": response.status_code,
+                "type": failure,
+                "message": f"模型调用失败（HTTP {response.status_code}）",
+            }
+    finally:
+        store.release(account)
+
+
+# ── 流量日志 ─────────────────────────────────────────────────────────────────
+@router.get("/logs")
+async def request_logs(
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    query: str = Query("", max_length=120),
+    status: str = Query("all", pattern="^(all|success|error)$"),
+):
+    return store.list_request_logs(limit=limit, offset=offset, query=query, status=status)
+
+
+@router.delete("/logs")
+async def clear_request_logs():
+    return {"deleted": store.clear_request_logs()}
+
+
+# ── OAuth 登录（Z.AI 3.7.7 authorization-code flow）────────────────────────
+def _get_login_session(flow_id: str) -> _LoginSession:
+    session = _login_flows.get(flow_id)
+    if session is None:
+        raise HTTPException(404, "登录会话不存在或已过期")
+    if time.time() - session.created_at > settings.OAUTH_FLOW_TIMEOUT:
+        _login_flows.pop(flow_id, None)
+        raise HTTPException(410, "登录会话已过期，请重新生成认证链接")
+    return session
+
+
+async def _exchange_and_save_oauth(
+    callback_url: str, flow: ZaiAuthFlow | None = None
+) -> dict:
+    try:
+        if flow is None:
+            flow, result = await ZaiAuthFlow.exchange_external_callback_url(callback_url)
+        else:
+            result = await flow.exchange_callback_url(callback_url)
+        token = str(result.get("token") or "").strip()
+        if not token:
+            raise OAuthError("授权结果缺少 ZCode JWT")
+        account = store.add_account(
+            "zai",
+            flow.account_name(result),
+            token,
+        )
+        oauth_record = result.get("oauth")
+        if isinstance(oauth_record, dict):
+            account.oauth = oauth_record
+            store.update_account(account)
+        try:
+            await refresh_accounts([account])
+        except Exception:  # noqa: BLE001 - 额度失败不应撤销已成功的授权
+            pass
+        return account.public_view()
+    except OAuthError as err:
+        raise HTTPException(400, str(err)) from err
+    except Exception as err:  # noqa: BLE001 - 不向前端泄漏未知异常或凭据
+        raise HTTPException(502, "授权登录失败，请重新尝试") from err
+
+
 @router.post("/login/start")
 async def login_start():
-    """发起 Z.AI OAuth，返回授权链接供前端展示。"""
+    """生成可在用户本地浏览器打开的官方 Z.AI 授权链接。"""
+    _login_flows.clear()
     flow = ZaiAuthFlow()
-    try:
-        flow_id, authorize_url = await flow.init()
-    except Exception as err:  # noqa: BLE001
-        raise HTTPException(502, f"登录初始化失败: {err}")
-    _login_flows[flow_id] = flow
-    return {"flow_id": flow_id, "authorize_url": authorize_url}
+    flow_id, authorize_url = await flow.init()
+    session = _LoginSession(flow=flow, created_at=time.time())
+    _login_flows[flow_id] = session
+    return {
+        "flow_id": flow_id,
+        "authorize_url": authorize_url,
+        "expires_in": settings.OAUTH_FLOW_TIMEOUT,
+    }
+
+
+@router.post("/login/complete/{flow_id}")
+async def login_complete(flow_id: str, payload: dict = Body(...)):
+    """校验用户粘贴的官方回调网址，兑换 JWT 并加入账号池。"""
+    session = _get_login_session(flow_id)
+    callback_url = str(payload.get("callback_url") or "").strip()
+    account = await _exchange_and_save_oauth(callback_url, session.flow)
+    _login_flows.pop(flow_id, None)
+    return {"status": "ready", "account": account}
+
+
+@router.post("/login/import-callback")
+async def login_import_callback(payload: dict = Body(...)):
+    """直接导入由本地 ZCode/浏览器生成、尚未消费的官方回调网址。"""
+    callback_url = str(payload.get("callback_url") or "").strip()
+    account = await _exchange_and_save_oauth(callback_url)
+    return {"status": "ready", "account": account}
 
 
 @router.get("/login/poll/{flow_id}")
 async def login_poll(flow_id: str):
-    """轮询授权状态；成功后自动兑换凭证并加入账号池。"""
-    flow = _login_flows.get(flow_id)
-    if not flow:
-        raise HTTPException(404, "登录会话不存在或已过期")
-    try:
-        data = await flow.poll(flow_id)
-    except Exception:  # noqa: BLE001 - 单次网络抖动按 pending 处理
-        return {"status": "pending"}
+    """兼容旧前端：本地浏览器模式始终等待用户粘贴回调网址。"""
+    session = _get_login_session(flow_id)
+    remaining = max(0, settings.OAUTH_FLOW_TIMEOUT - int(time.time() - session.created_at))
+    return {"status": "pending", "expires_in": remaining}
 
-    state = data.get("status")
-    if state == "failed":
-        _login_flows.pop(flow_id, None)
-        return {"status": "failed"}
-    if state != "ready":
-        return {"status": "pending"}
 
-    # 授权成功：保存 Coding Plan JWT，并尝试兑换 API Key 作为同账号回退
-    zcode_jwt = data.get("token")
-    access_token = (data.get("zai") or {}).get("access_token")
-    account = None
-    if zcode_jwt:
-        account = store.add_account("zai", "oauth-login", zcode_jwt)
-    if access_token:
-        try:
-            api_key = await flow.exchange_api_key(access_token)
-            if account is not None:
-                account.api_key = api_key
-                store.update_account(account)
-            else:
-                account = store.add_account("zai", "oauth-login", api_key)
-        except Exception:  # noqa: BLE001 - 兑换失败不影响 JWT 已入池
-            pass
-
+@router.delete("/login/{flow_id}")
+async def login_cancel(flow_id: str):
     _login_flows.pop(flow_id, None)
-    if account is None:
-        return {"status": "failed", "message": "未能从授权结果中获取凭证"}
+    return {"ok": True}
 
-    if account.mode == "jwt":
-        await refresh_accounts([account])
-    return {"status": "ready", "account": account.public_view()}
+
+async def shutdown_login_flows() -> None:
+    _login_flows.clear()
 
 
 # ── 设置 ─────────────────────────────────────────────────────────────────────

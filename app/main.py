@@ -34,13 +34,14 @@ async def lifespan(app: FastAPI):
     base = f"http://{_display_host()}:{settings.PORT}"
     logs.banner([
         f"{logs._B}{logs._MAG}zcode2api{logs._R} {logs._DIM}v{settings.APP_VERSION} · Python{logs._R}",
-        f"{logs._DIM}后台管理{logs._R}  {logs._C}{base}/admin/login{logs._R}",
-        f"{logs._DIM}对话端点{logs._R}  {logs._C}{base}/v1/messages{logs._R}",
+        f"{logs._DIM}后台管理{logs._R}  {logs._C}{base}/{logs._R}",
+        f"{logs._DIM}API Base{logs._R}  {logs._C}{base}/v1{logs._R}",
     ])
     try:
         yield
     finally:
         await monitor.stop()
+        await admin_api.shutdown_login_flows()
         await captcha_manager.close()
 
 

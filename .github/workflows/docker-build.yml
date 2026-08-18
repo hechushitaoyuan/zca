@@ -46,7 +46,9 @@ jobs:
           node-version: "20"
 
       - name: Solver syntax check
-        run: node --check captcha_node/solver.js
+        run: |
+          node --check captcha_node/browser_solver.js
+          node --check captcha_node/solver.js
 
   # ── 多架构构建（仅 test 通过后执行）──────────────────────────────────────────
   build:

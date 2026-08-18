@@ -21,6 +21,8 @@ from .scheduling import choose_account
 
 _TBL = "accounts"
 _META = "meta"
+_REQUEST_LOGS = "request_logs"
+_REQUEST_LOG_LIMIT = 10_000
 
 
 class Store:
@@ -64,6 +66,26 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_acc_provider ON {_TBL} (provider);
                 CREATE INDEX IF NOT EXISTS idx_acc_status   ON {_TBL} (status);
+                CREATE TABLE IF NOT EXISTS {_REQUEST_LOGS} (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id    TEXT,
+                    created_at    REAL NOT NULL,
+                    method        TEXT NOT NULL,
+                    path          TEXT NOT NULL,
+                    model         TEXT,
+                    protocol      TEXT,
+                    account_id    TEXT,
+                    account_name  TEXT,
+                    status_code   INTEGER NOT NULL,
+                    latency_ms    INTEGER NOT NULL DEFAULT 0,
+                    input_tokens  INTEGER,
+                    output_tokens INTEGER,
+                    error_type    TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_reqlog_created
+                    ON {_REQUEST_LOGS} (created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_reqlog_account
+                    ON {_REQUEST_LOGS} (account_id);
                 """
             )
             conn.execute(
@@ -214,10 +236,14 @@ class Store:
             self._delete_account(target.id)
             return True
 
-    def update_account(self, account: Account) -> None:
-        """持久化某个账号的当前状态。"""
+    def update_account(self, account: Account) -> bool:
+        """持久化当前仍在池中的账号，避免已删除账号被旧请求复活。"""
         with self._lock:
+            current = self._find_locked(account.provider, account.id)
+            if current is not account:
+                return False
             self._persist_account(account)
+            return True
 
     def set_enabled(self, provider: str, id_or_name: str, enabled: bool) -> bool:
         with self._lock:
@@ -252,6 +278,162 @@ class Store:
         """Release an in-flight reservation without persisting transient state."""
         with self._lock:
             account.active_requests = max(0, account.active_requests - 1)
+
+    def reserve_specific(self, account: Account) -> bool:
+        """Reserve a chosen account for an admin test without running the scheduler."""
+        with self._lock:
+            if account.active_requests >= max(1, account.concurrency_limit):
+                return False
+            account.active_requests += 1
+            return True
+
+    def pool_state(self, provider: str) -> dict[str, int]:
+        """返回调度状态计数，用于区分忙碌、冷却、失效和额度耗尽。"""
+        now = time.time()
+        state = {
+            "total": 0,
+            "selectable": 0,
+            "busy": 0,
+            "cooling": 0,
+            "exhausted": 0,
+            "invalid": 0,
+            "disabled": 0,
+        }
+        with self._lock:
+            for account in self._accounts.get(provider, []):
+                state["total"] += 1
+                effective = account.effective_status(now)
+                if not account.enabled or effective == Status.DISABLED:
+                    state["disabled"] += 1
+                elif effective == Status.INVALID:
+                    state["invalid"] += 1
+                elif effective == Status.EXHAUSTED:
+                    state["exhausted"] += 1
+                elif effective == Status.COOLING:
+                    state["cooling"] += 1
+                elif account.active_requests >= max(1, account.concurrency_limit):
+                    state["busy"] += 1
+                else:
+                    state["selectable"] += 1
+        return state
+
+    # ── 请求日志 ─────────────────────────────────────────────────────────────
+    def record_request_log(
+        self,
+        *,
+        request_id: str,
+        method: str,
+        path: str,
+        model: str,
+        protocol: str,
+        account_id: str | None,
+        account_name: str | None,
+        status_code: int,
+        latency_ms: int,
+        input_tokens: int | None = None,
+        output_tokens: int | None = None,
+        error_type: str | None = None,
+        created_at: float | None = None,
+    ) -> None:
+        """Persist request metadata only; prompts, responses and credentials are excluded."""
+        with self._lock, closing(self._connect()) as conn:
+            cursor = conn.execute(
+                f"""INSERT INTO {_REQUEST_LOGS}
+                    (request_id, created_at, method, path, model, protocol,
+                     account_id, account_name, status_code, latency_ms,
+                     input_tokens, output_tokens, error_type)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    request_id,
+                    time.time() if created_at is None else created_at,
+                    method[:12],
+                    path[:160],
+                    model[:80],
+                    protocol[:32],
+                    account_id,
+                    account_name[:160] if account_name else None,
+                    int(status_code),
+                    max(0, int(latency_ms)),
+                    input_tokens,
+                    output_tokens,
+                    error_type[:80] if error_type else None,
+                ),
+            )
+            # 定期裁剪，避免长期运行后日志无限增长。
+            if cursor.lastrowid and cursor.lastrowid % 100 == 0:
+                conn.execute(
+                    f"""DELETE FROM {_REQUEST_LOGS}
+                        WHERE id NOT IN (
+                            SELECT id FROM {_REQUEST_LOGS}
+                            ORDER BY id DESC LIMIT ?
+                        )""",
+                    (_REQUEST_LOG_LIMIT,),
+                )
+            conn.commit()
+
+    def list_request_logs(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        query: str = "",
+        status: str = "all",
+    ) -> dict:
+        limit = min(200, max(1, int(limit)))
+        offset = max(0, int(offset))
+        clauses: list[str] = []
+        params: list[object] = []
+        query = query.strip().lower()
+        if query:
+            clauses.append(
+                "(LOWER(model) LIKE ? OR LOWER(path) LIKE ? OR "
+                "LOWER(COALESCE(account_name,'')) LIKE ? OR LOWER(COALESCE(error_type,'')) LIKE ?)"
+            )
+            needle = f"%{query}%"
+            params.extend([needle, needle, needle, needle])
+        if status == "success":
+            clauses.append("status_code BETWEEN 200 AND 299")
+        elif status == "error":
+            clauses.append("NOT (status_code BETWEEN 200 AND 299)")
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+        with self._lock, closing(self._connect()) as conn:
+            rows = conn.execute(
+                f"""SELECT id, request_id, created_at, method, path, model, protocol,
+                           account_id, account_name, status_code, latency_ms,
+                           input_tokens, output_tokens, error_type
+                    FROM {_REQUEST_LOGS}{where}
+                    ORDER BY id DESC LIMIT ? OFFSET ?""",
+                (*params, limit, offset),
+            ).fetchall()
+            stats = conn.execute(
+                f"""SELECT COUNT(*) AS total,
+                           COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 1 ELSE 0 END),0) AS success,
+                           COALESCE(SUM(CASE WHEN status_code BETWEEN 200 AND 299 THEN 0 ELSE 1 END),0) AS error
+                    FROM {_REQUEST_LOGS}{where}""",
+                params,
+            ).fetchone()
+        account_names = {account.id: account.name for account in self.list_accounts()}
+        items = []
+        for row in rows:
+            item = dict(row)
+            if item["account_id"] in account_names:
+                # 兼容升级前已经按脱敏名称写入的记录，展示时恢复当前完整名称。
+                item["account_name"] = account_names[item["account_id"]]
+            items.append(item)
+        return {
+            "items": items,
+            "stats": dict(stats) if stats else {"total": 0, "success": 0, "error": 0},
+            "limit": limit,
+            "offset": offset,
+        }
+
+    def clear_request_logs(self) -> int:
+        with self._lock, closing(self._connect()) as conn:
+            count = conn.execute(f"SELECT COUNT(*) FROM {_REQUEST_LOGS}").fetchone()[0]
+            conn.execute(f"DELETE FROM {_REQUEST_LOGS}")
+            conn.commit()
+        return int(count)
 
     # ── 导入 / 导出 ─────────────────────────────────────────────────────────
     def export(self) -> dict:

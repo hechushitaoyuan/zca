@@ -110,6 +110,14 @@ class FailureClassificationTests(unittest.TestCase):
             classify_upstream_failure(403, '{"code":3007,"message":"captcha"}'),
             FailureKind.CAPTCHA,
         )
+        self.assertEqual(
+            classify_upstream_failure(400, '{"code":"F018","message":"reused"}'),
+            FailureKind.CAPTCHA,
+        )
+        self.assertEqual(
+            classify_upstream_failure(400, '{"code":3007,"message":"verify failed"}'),
+            FailureKind.CAPTCHA,
+        )
         self.assertEqual(classify_upstream_failure(401, "invalid jwt"), FailureKind.AUTH)
         self.assertEqual(classify_upstream_failure(402, "quota exhausted"), FailureKind.EXHAUSTED)
         self.assertEqual(classify_upstream_failure(429, "slow down"), FailureKind.RATE_LIMIT)
