@@ -33,6 +33,7 @@ MAX_ACCOUNT_ATTEMPTS = 5
 # Z.AI 上游模型名大小写敏感
 MODEL_NAME_MAP = {
     "glm-5.3": "GLM-5.3",
+    "glm-5.3-flash": "GLM-5.3-Flash",
     "glm-5.2": "GLM-5.2",
     "glm-5-turbo": "GLM-5-Turbo",
     "glm-turbo": "GLM-5-Turbo",
@@ -42,7 +43,7 @@ MODEL_NAME_MAP = {
 }
 
 # /v1/models 对外公布的可用模型
-AVAILABLE_MODELS = ["GLM-5.3", "GLM-5.2", "GLM-5-Turbo"]
+AVAILABLE_MODELS = ["GLM-5.3", "GLM-5.3-Flash"]
 
 
 @router.get("/v1", dependencies=[Depends(verify_gateway_key)])

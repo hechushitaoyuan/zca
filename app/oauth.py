@@ -38,7 +38,11 @@ class OAuthTokenError(OAuthError):
 
 
 def _official_redirect_uri() -> str:
-    return f"{settings.OAUTH_BRIDGE_URL}?{urlencode({'redirect': _DEEP_LINK})}"
+    # 注意：不在这里 urlencode deep link —— _build_authorize_url 会对整个
+    # redirect_uri 做一次 urlencode；若这里先编码会把 % 二次转义，导致官方
+    # 授权服务收到的 redirect 是字面 %3A%2F 而匹配失败（404/回调不认）。
+    # 这里返回「bridge + 明文 deep link」的原始 URL，交由上层整体编码一次。
+    return f"{settings.OAUTH_BRIDGE_URL}?redirect={_DEEP_LINK}"
 
 
 class ZaiAuthFlow:

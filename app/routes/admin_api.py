@@ -34,7 +34,7 @@ class _LoginSession:
 
 # OAuth 授权链接由用户在本地浏览器打开；同一时刻只保留一个待完成流程。
 _login_flows: dict[str, _LoginSession] = {}
-_TEST_MODELS = {"GLM-5.3", "GLM-5.2", "GLM-5-Turbo"}
+_TEST_MODELS = {"GLM-5.3", "GLM-5.3-Flash"}
 
 
 # ── 鉴权探针 ─────────────────────────────────────────────────────────────────

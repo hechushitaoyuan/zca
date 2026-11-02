@@ -14,6 +14,7 @@ with _SYSTEM_BLOCKS_PATH.open("r", encoding="utf-8") as _stream:
 
 MODEL_NAME_MAP = {
     "glm-5.3": "GLM-5.3",
+    "glm-5.3-flash": "GLM-5.3-Flash",
     "glm-5.2": "GLM-5.2",
     "glm-5-turbo": "GLM-5-Turbo",
     "glm-turbo": "GLM-5-Turbo",

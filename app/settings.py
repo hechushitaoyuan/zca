@@ -83,7 +83,7 @@ ACCOUNT_BUSY_WAIT_TIMEOUT = max(0, _int("ZCODE_ACCOUNT_BUSY_WAIT_TIMEOUT", 5))
 # Z.ai OAuth 3.7.7：认证链接在用户本地浏览器打开，回调网址粘贴回后台兑换。
 OAUTH_FLOW_TIMEOUT = _int("ZCODE_OAUTH_TIMEOUT", 600)  # seconds
 OAUTH_AUTHORIZE_URL = os.getenv(
-    "ZCODE_OAUTH_AUTHORIZE_URL", "https://chat.z.ai/api/oauth/authorize"
+    "ZCODE_OAUTH_AUTHORIZE_URL", "https://zcode.z.ai/app/oauth/login"
 )
 OAUTH_TOKEN_URL = os.getenv(
     "ZCODE_OAUTH_TOKEN_URL", "https://zcode.z.ai/api/v1/oauth/token"
