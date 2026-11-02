@@ -96,9 +96,9 @@ graph TD
 | Account Model | `app/models.py` | `Account` 数据类、`Status` 状态、可选中判定、脱敏视图 |
 | Request Builder | `app/agent.py` | 按凭证选上游端点、组装请求头(含 `X-Aliyun-Captcha-Verify-Param`) |
 | Quota Monitor | `app/quota.py` | 单账号额度查询 + 状态判定 + 后台周期刷新任务 |
-| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、缓存/并发去重/重试 |
-| Captcha Solver | `captcha_node/solver.js` | jsdom 模拟浏览器跑阿里云无痕 SDK,输出 `verifyParam` |
-| OAuth Flow | `app/oauth.py` | Z.AI OAuth:init → poll → 兑换 API Key |
+| Captcha Manager | `app/captcha.py` | 拉取验证码配置、调用 Node 求解器、Windows 一次性验证会话/串行/重试 |
+| Captcha Solver | `captcha_node/browser_solver.js` | 真实 Chromium 跑阿里云官方 SDK，输出 `verifyParam` |
+| OAuth Flow | `app/oauth.py` | 生成官方认证链接 → 校验粘贴的桥接/深链接回调 → token 兑换 |
 | Settings | `app/settings.py` | 环境变量 / 默认值 / 路径 / 上游端点 |
 | Logs | `app/logs.py` | 彩色终端日志(banner / req / req_ok / req_err …) |
 
@@ -205,33 +205,43 @@ return pool[idx]
 
 ---
 
-## 6. 无浏览器无痕验证
+## 6. Chromium 验证码
 
-Coding Plan(JWT)模式访问 `zcode.z.ai` 上游需携带阿里云无痕验证参数
-(请求头 `X-Aliyun-Captcha-Verify-Param`)。本项目**不启动真实浏览器**,而是:
+Coding Plan(JWT)模式访问 `zcode.z.ai` 上游需携带阿里云验证参数
+(请求头 `X-Aliyun-Captcha-Verify-Param`)。本项目在真实 Chromium 中运行官方 SDK:
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant CM as Captcha Manager (Python)
     participant CFG as zcode.z.ai/client/configs
-    participant SV as Node Solver (jsdom)
+    participant SV as Node Solver (Chromium)
+    participant WIN as Windows 本地浏览器
     participant CDN as o.alicdn.com
     participant ALI as 阿里云无痕服务
 
     CM->>CFG: GET 验证码配置（sceneId/region/prefix）
     CFG-->>CM: {sceneId, region, prefix}
     CM->>SV: spawn solver.js（子进程）
-    SV->>SV: 构造 jsdom，注入浏览器 API 桩<br/>(matchMedia/canvas/WebGL/Worker/OffscreenCanvas)
+    SV->>SV: 启动持久化 Chromium profile
     SV->>CDN: 加载 AliyunCaptcha.js
     SV->>ALI: initAliyunCaptcha + startTracelessVerification
     ALI-->>SV: success(verifyParam)
     SV-->>CM: stdout: VERIFY_PARAM=<param>
-    CM->>CM: 写缓存（CAPTCHA_CACHE_TTL，默认 45s）
+    CM->>CM: 交付本次请求专用参数
+    alt 风控要求交互滑块
+        SV-->>CM: interactive-required（快速释放账号）
+        CM->>WIN: 后台生成随机短期验证链接
+        WIN->>ALI: 用户人工完成滑块
+        WIN-->>CM: 回传一次性 verifyParam
+        CM->>CM: 下一次模型请求消费并立即清除
+    end
 ```
 
 - `verifyParam` 实为 `base64(JSON{certifyId, sceneId, isSign, securityToken})`,由阿里云服务端签发。
-- **缓存**:TTL 内复用;**并发去重**:同一时刻仅跑一个求解进程(`asyncio.Lock`);
+- `verifyParam` 是一次性参数，禁止跨请求复用；F018/HTTP 400 表示参数被重复消费。
+- Windows 人工验证结果只在内存中短暂排队，不持久化、不经管理 API 回显；链接和结果分别过期。
+- **串行求解**:同一时刻仅跑一个求解进程(`asyncio.Lock`)，避免多个 Chromium 争用 profile；
   **重试**:`CAPTCHA_SOLVE_RETRIES`(默认 4)次。
 - 仅 zai + JWT 账号需要;API Key 账号走 `api.z.ai` 回退端点,无需验证码。
 
@@ -267,7 +277,9 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 
 所有可调参数集中在 `app/settings.py`,均可由环境变量覆盖(见 `README.md` 的环境变量表)。
 要点:`ZCODE_PORT`、`ZCODE_DATA_DIR`、`ZCODE_QUOTA_REFRESH_INTERVAL`、`ZCODE_COOLING_SECONDS`、
-`ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CACHE_TTL`。
+`ZCODE_NODE_PATH`、`ZCODE_CAPTCHA_TIMEOUT`、`ZCODE_CAPTCHA_RETRIES`、`CAPTCHA_CONFIG_CACHE_TTL`、
+`ZCODE_ACCOUNT_TEST_CAPTCHA_TIMEOUT`、`ZCODE_ACCOUNT_TEST_UPSTREAM_TIMEOUT`、
+`ZCODE_OAUTH_TIMEOUT`。
 
 ---
 
@@ -287,7 +299,7 @@ meta(      key PK, value )      # admin_key / gateway_key / quota_refresh_interv
 │   ├── logs.py            # 彩色日志
 │   ├── routes/            # gateway / admin_api / pages
 │   └── statics/           # css / js / admin/*.html
-├── captcha_node/          # Captcha Solver（Node + jsdom，solver.js）
+├── captcha_node/          # Chromium 验证码求解器
 ├── main.py                # CLI 入口
 ├── data/                  # 运行时生成：accounts.db
 └── docs/ARCHITECTURE.md   # 本文件

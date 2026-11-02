@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>ZCode 本地浏览器验证</title>
+  <style>
+    :root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#f5f4ef;color:#151515;padding:20px}
+    main{width:min(480px,100%);background:#fff;border-radius:18px;padding:28px;box-shadow:0 20px 55px rgba(0,0,0,.09)}
+    .brand{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:#777}
+    h1{font-size:22px;margin:8px 0 4px}
+    .sub{font-size:13px;line-height:1.65;color:#686868;margin:0 0 22px}
+    #captcha-wrap{min-height:120px;display:grid;align-items:center}
+    #captcha-element{width:100%}
+    #captcha-button{width:100%;height:44px;border:0;border-radius:999px;background:#111;color:#fff;font-size:14px;font-weight:700;cursor:pointer}
+    #captcha-button:disabled{opacity:.55;cursor:wait}
+    .status{margin-top:18px;padding:12px 14px;border-radius:10px;background:#f5f5f5;font-size:13px;line-height:1.55;color:#555}
+    .status.ok{background:#edf8f1;color:#187044}
+    .status.err{background:#fff1f0;color:#b42318}
+    .hint{font-size:12px;color:#999;margin-top:14px;line-height:1.6}
+    .reload{display:none;margin-top:12px;width:100%;height:38px;border:1px solid #ddd;border-radius:999px;background:#fff;font-weight:600;cursor:pointer}
+  </style>
+  <script>
+    window.ZcaCaptchaBootstrap = {{CAPTCHA_BOOTSTRAP}};
+    window.AliyunCaptchaConfig = {
+      region: window.ZcaCaptchaBootstrap.region,
+      prefix: window.ZcaCaptchaBootstrap.prefix,
+    };
+  </script>
+  <script src="https://o.alicdn.com/captcha-frontend/aliyunCaptcha/AliyunCaptcha.js"></script>
+</head>
+<body>
+<main>
+  <div class="brand">zcode2api</div>
+  <h1>完成人机验证</h1>
+  <p class="sub">验证将在当前 Windows 浏览器中完成。成功结果会安全回传 VPS，并且只供下一次模型请求使用一次。</p>
+  <div id="captcha-wrap">
+    <div id="captcha-element"></div>
+    <button id="captcha-button" type="button">开始验证</button>
+  </div>
+  <div class="status" id="status">正在载入阿里云验证组件…</div>
+  <button class="reload" id="reload" type="button" onclick="location.reload()">重新载入验证</button>
+  <div class="hint">验证完成后请立即返回 ZCode 或账号池发起测试。验证结果有效时间很短，且不能重复使用。</div>
+</main>
+<script>
+(() => {
+  'use strict';
+  const bootstrap = window.ZcaCaptchaBootstrap || {};
+  const challengeId = bootstrap.challengeId || '';
+  const statusEl = document.getElementById('status');
+  const buttonEl = document.getElementById('captcha-button');
+  const reloadEl = document.getElementById('reload');
+  let submitted = false;
+  let instance = null;
+
+  function setStatus(text, kind=''){
+    statusEl.textContent=text;
+    statusEl.className='status'+(kind?' '+kind:'');
+  }
+  function failPage(text){
+    setStatus(text,'err');
+    buttonEl.disabled=true;
+    reloadEl.style.display='block';
+  }
+  function readResult(value){
+    if(!value||typeof value!=='object')return{};
+    return{
+      success:typeof value.success==='boolean'?value.success:undefined,
+      verifyResult:typeof value.verifyResult==='boolean'?value.verifyResult:undefined,
+      verifyCode:typeof value.verifyCode==='string'?value.verifyCode:(typeof value.VerifyCode==='string'?value.VerifyCode:undefined),
+      verifyParam:typeof value.captchaVerifyParam==='string'?value.captchaVerifyParam:(typeof value.CaptchaVerifyParam==='string'?value.CaptchaVerifyParam:undefined),
+    };
+  }
+  async function submit(verifyParam){
+    if(submitted)return;
+    if(typeof verifyParam!=='string'||verifyParam.length<32)return failPage('验证结果格式异常，请重新生成验证链接。');
+    submitted=true;
+    buttonEl.disabled=true;
+    setStatus('验证通过，正在把一次性结果回传 VPS…');
+    try{
+      const response=await fetch(`/captcha/${encodeURIComponent(challengeId)}/complete`,{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({verify_param:verifyParam}),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(data.detail||'回传失败');
+      setStatus(`验证完成。请在 ${Math.max(1,Number(data.result_expires_in)||1)} 秒内返回 ZCode 发起一次模型请求。`,'ok');
+    }catch(error){
+      submitted=false;
+      failPage(`结果回传失败：${error.message||'未知错误'}`);
+    }
+  }
+
+  if(typeof window.initAliyunCaptcha!=='function'){
+    failPage('阿里云验证组件加载失败，请检查网络后重新载入。');
+    return;
+  }
+  setStatus('组件已载入，正在进行无感验证；如有需要会显示滑块。');
+  window.initAliyunCaptcha({
+    SceneId:bootstrap.scene,
+    mode:'popup',
+    region:bootstrap.region,
+    prefix:bootstrap.prefix,
+    language:'cn',
+    element:'#captcha-element',
+    button:'#captcha-button',
+    captchaLogoImg:'',
+    showErrorTip:true,
+    delayBeforeSuccess:false,
+    slideStyle:{width:360,height:40},
+    getInstance(value){
+      instance=value;
+      try{instance.startTracelessVerification();}
+      catch(_error){setStatus('请点击“开始验证”完成验证。');}
+    },
+    success(verifyParam){submit(verifyParam);},
+    fail(value){
+      const result=readResult(value);
+      const terminalPass=(result.success===true&&result.verifyResult===true)||result.verifyCode==='T006';
+      if(terminalPass&&result.verifyParam){submit(result.verifyParam);return;}
+      const needsInteractive=(result.success===true&&result.verifyResult===false)||(terminalPass&&!result.verifyParam);
+      if(needsInteractive){
+        setStatus('请在弹出的窗口中拖动滑块完成验证。');
+        try{if(instance&&typeof instance.show==='function')instance.show();else buttonEl.click();}
+        catch(_error){failPage('无法打开滑块，请重新载入页面。');}
+        return;
+      }
+      failPage('本次验证没有通过，请重新载入后再试。');
+    },
+    onError(){failPage('验证服务返回异常，请重新载入后再试。');},
+  });
+})();
+</script>
+</body>
+</html>

@@ -8,6 +8,14 @@ import re
 from .models import FailureKind
 
 _EXHAUST_KEYWORDS = ("quota", "insufficient", "balance", "exhaust", "额度", "余额不足")
+_CAPTCHA_KEYWORDS = (
+    "captcha",
+    "verify token",
+    "verify failed",
+    "verify param",
+    "captchaverifyparam",
+    "f018",  # Aliyun V3: CaptchaVerifyParam was reused.
+)
 
 
 def _contains_business_code(text: str, expected: int) -> bool:
@@ -34,11 +42,9 @@ def classify_upstream_failure(status_code: int, text: str) -> str | None:
     low = text.lower()
     if status_code == 405 and _contains_business_code(text, 3012):
         return FailureKind.RISK_3012
-    if status_code == 403 and (
+    if status_code in (400, 403) and (
         _contains_business_code(text, 3007)
-        or "captcha" in low
-        or "verify token" in low
-        or "verify failed" in low
+        or any(keyword in low for keyword in _CAPTCHA_KEYWORDS)
     ):
         return FailureKind.CAPTCHA
     if status_code == 402 or any(keyword in low for keyword in _EXHAUST_KEYWORDS):

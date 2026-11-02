@@ -18,6 +18,10 @@
     </div>
     <div class="page-actions">
       <span class="live-dot" id="live-dot">实时监控中</span>
+      <button onclick="openBrowserCaptcha()" class="page-action-btn" id="btn-browser-captcha">
+        <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M9 3h6"/><path d="M10 3v5l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/><path d="M8 14h8"/></svg>
+        本地验证
+      </button>
       <button onclick="openImport()" class="page-action-btn">
         <svg width="14" height="14" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" fill="none"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
         导入
@@ -46,7 +50,16 @@
   </div>
 
   <div class="section-head">
-    <div class="section-title">账户明细 <span class="section-count-badge" id="tbl-count">0</span></div>
+    <div class="account-detail-head">
+      <div class="section-title">账户明细 <span class="section-count-badge" id="tbl-count">0</span></div>
+      <label class="test-model-switch">
+        <span>测试模型</span>
+        <select id="test-model">
+          <option value="GLM-5.3">GLM-5.3</option>
+          <option value="GLM-5.3-Flash">GLM-5.3-Flash</option>
+        </select>
+      </label>
+    </div>
     <div class="section-meta" id="last-updated"></div>
   </div>
 
@@ -62,7 +75,7 @@
         <th class="table-center" style="width:60px">调用</th>
         <th class="table-center" style="width:60px">失败</th>
         <th style="width:120px">最近使用</th>
-        <th style="width:120px">操作</th>
+        <th style="width:190px">操作</th>
       </tr></thead>
       <tbody id="tbody"></tbody>
     </table>
@@ -99,23 +112,57 @@
     <!-- 授权登录 -->
     <div id="add-pane-login" style="display:none">
       <div class="dialog-body">
-        <div class="dialog-help">通过 Z.AI 官方 OAuth 授权登录，授权成功后自动导入到账号池（含 Coding Plan 额度）。</div>
-        <div id="login-idle">
-          <button onclick="startLogin()" id="login-start-btn" class="dialog-btn dialog-btn-primary w-full" style="height:40px">开始登录</button>
+        <div style="font-size:14px;font-weight:700;margin-bottom:4px">一键导入授权账号（国际站 ZCode）</div>
+        <div class="dialog-help" style="margin-bottom:10px">账号池走 <b>国际站 zcode.z.ai</b>。点下方按钮会打开国际站 ZCode 授权入口；<b>请在运行中已登录国际站的浏览器/桌面 ZCode 里完成登录与授权</b>，再把地址栏回调链接粘回，系统自动解出账号信息与 token 并录入。
+<div style="margin-top:6px;opacity:.75">提示：国际站授权端点依赖已登录会话；纯匿名的新窗口可能显示 404，属正常——请用已登录国际站的浏览器/桌面生成授权。</div></div>
+        <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+          <input class="input" id="login-account" placeholder="账号备注（可选，如 email）" style="font-size:12px">
+          <button onclick="oneClickImport()" id="login-oneclick-btn" class="dialog-btn dialog-btn-primary" style="height:36px;flex-shrink:0">一键导入（国际站）</button>
         </div>
+        <div id="login-idle" style="display:none"></div>
         <div id="login-active" style="display:none">
-          <div class="dialog-help" style="margin-bottom:6px">请在浏览器中打开下面链接完成授权：</div>
+          <div style="font-size:13px;font-weight:600;margin-bottom:7px">① 国际站 ZCode 授权网址</div>
           <div style="display:flex;gap:8px;align-items:center">
             <input class="input" id="login-url" readonly style="font-size:12px">
             <button onclick="copyLoginUrl()" class="dialog-btn">复制</button>
-            <button onclick="openLoginUrl()" class="dialog-btn dialog-btn-primary">打开</button>
+            <button onclick="openLoginUrl()" class="dialog-btn dialog-btn-primary">重新打开授权页</button>
           </div>
-          <div class="live-dot" id="login-status" style="margin-top:16px">等待授权中…</div>
+        </div>
+        <div style="border-top:1px solid var(--border);padding-top:12px;margin-top:6px">
+          <div style="font-size:13px;font-weight:600;margin-bottom:7px">② 认证完成后，把地址栏完整网址粘贴到这里（自动识别并导入）</div>
+          <textarea class="input" id="login-callback-url" rows="3" placeholder="https://zcode.z.ai/app/oauth/login?redirect=…&code=…&state=…" style="font-size:12px;resize:vertical"></textarea>
+        </div>
+        <div class="live-dot" id="login-status">点击上方「一键导入（国际站）」开始</div>
+        <div id="login-result" style="display:none;margin-top:10px;padding:10px;border:1px solid var(--border);border-radius:6px;background:var(--bg2,#f6f8fa)">
+          <div style="font-size:13px;font-weight:700;color:var(--ok,#1a7f37)">✔ 已导入</div>
+          <div id="login-result-body" style="font-size:12px;margin-top:4px"></div>
         </div>
       </div>
       <div class="dialog-actions">
         <button onclick="cancelLogin()" class="dialog-btn">关闭</button>
+        <button onclick="completeLogin()" id="login-complete-btn" class="dialog-btn dialog-btn-primary">手动验证并导入</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Windows browser captcha modal -->
+<div class="modal-overlay" id="modal-captcha">
+  <div class="modal" style="width:min(560px,92vw)">
+    <div class="modal-title">Windows 本地浏览器验证</div>
+    <div class="dialog-body">
+      <div class="dialog-help">在你的 Windows Chrome/Edge 中打开下面的一次性链接并完成滑块。成功结果会回传到 VPS，只供下一次模型调用或账号测试使用一次。</div>
+      <div class="captcha-warning">请完成验证后立即回到 ZCode 重试。若 ZCode 同时测试两个模型，第二个请求还需要再生成一次验证结果。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input class="input" id="captcha-url" readonly placeholder="正在生成验证链接…" style="font-size:12px">
+        <button onclick="copyCaptchaUrl()" class="dialog-btn" id="captcha-copy-btn" disabled>复制</button>
+        <button onclick="openCaptchaUrl()" class="dialog-btn dialog-btn-primary" id="captcha-open-btn" disabled>打开</button>
+      </div>
+      <div class="captcha-session-status" id="captcha-session-status">正在获取当前验证配置…</div>
+    </div>
+    <div class="dialog-actions">
+      <button onclick="closeBrowserCaptcha()" class="dialog-btn">关闭</button>
+      <button onclick="startBrowserCaptcha()" class="dialog-btn" id="captcha-new-btn">重新生成</button>
     </div>
   </div>
 </div>
@@ -154,7 +201,8 @@
 <script src="/static/js/header.js?v={{APP_VERSION}}"></script>
 <script>
 let allAccounts=[], curFilter='all', _cb=null, _editId='', _timer=null;
-const refreshing=new Set();
+const refreshing=new Set(),testing=new Set();
+let _captchaId='',_captchaUrl='',_captchaPoll=null;
 
 const STATUS_LABEL={active:'正常',exhausted:'用完',cooling:'限流',invalid:'异常',disabled:'禁用'};
 
@@ -214,6 +262,7 @@ function rowHtml(a){
   const isJwt=a.mode==='jwt';
   const isDisabled=a.status==='disabled';
   const loading=refreshing.has(a.id);
+  const testLoading=testing.has(a.id);
   return `<tr>
     <td><span class="tok">${esc(a.token_masked)}</span><div style="font-size:11px;color:#aaa;margin-top:2px">${esc(a.name)}</div></td>
     <td class="table-center">${a.provider}</td>
@@ -224,6 +273,10 @@ function rowHtml(a){
     <td class="table-center" style="color:#9a9a9a">${a.fail_count||0}</td>
     <td style="font-size:12px;color:#9a9a9a">${fmtDate(a.last_used_at)}</td>
     <td><div class="row-actions">
+      <button onclick="testOne('${a.id}')" class="row-test-btn${testLoading?' is-loading':''}" ${testLoading?'disabled':''} title="使用所选模型测试此账号">
+        <svg viewBox="0 0 24 24"><path d="M9 3h6"/><path d="M10 3v5l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/><path d="M8 14h8"/></svg>
+        ${testLoading?'测试中':'测试'}
+      </button>
       ${isJwt?`<button onclick="refreshOne('${a.id}')" class="row-icon-btn${loading?' is-loading':''}" title="刷新额度"><svg viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14.6-4.6"/><path d="M4 4v5h5"/><path d="M4 13a8 8 0 0 0 14.6 4.6"/><path d="M20 20v-5h-5"/></svg></button>`:''}
       <button onclick="toggleEnabled('${a.id}',${isDisabled})" class="row-icon-btn" title="${isDisabled?'恢复':'禁用'}">
         ${isDisabled?'<svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.708"/><path d="M3 4v5h5"/></svg>':'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M8.5 8.5 15.5 15.5"/></svg>'}
@@ -234,10 +287,16 @@ function rowHtml(a){
   </tr>`;
 }
 
+const _QMODELS={glm53:['GLM-5.3','glm-5.3'],glm53flash:['GLM-5.3-Flash','glm-5.3-flash']};
+function _qAllowed(k){const n=String(k).toLowerCase();return n==='glm-5.3'||n==='glm-5.3-flash'||n==='glm_5.3'||n==='glm_5.3_flash';}
 function quotaCell(a){
   const q=a.quota||{};
-  const keys=Object.keys(q);
-  if(!keys.length)return a.mode==='jwt'?'<span class="quota-empty">未获取</span>':'<span class="quota-empty">—</span>';
+  // 用户要求：额度行只显示 GLM-5.3 / GLM-5.3-Flash，过滤掉 GLM-5.2 / GLM-5-Turbo
+  const keys=Object.keys(q).filter(_qAllowed);
+  if(!keys.length){
+    const all=Object.keys(q).length;
+    return (a.mode==='jwt'||all>0)?'<span class="quota-empty">'+(all>0?'（已过滤仅余GLM-5.3/FL）':'未获取')+'</span>':'<span class="quota-empty">—</span>';
+  }
   return '<div class="quota-rows">'+keys.map(k=>{
     const w=q[k]||{};const rem=Number(w.remaining)||0,tot=Number(w.total)||0;
     const pct=tot>0?Math.max(0,Math.min(100,Math.round(rem/tot*100))):0;
@@ -272,64 +331,100 @@ async function doAdd(){
 }
 
 /* ── 授权登录 ── */
-let _loginTimer=null, _loginUrl='';
+let _loginUrl='', _loginFlowId='', _importing=false;
+document.addEventListener('DOMContentLoaded',function(){
+  var cb=document.getElementById('login-callback-url');
+  if(cb)cb.addEventListener('input',_onCallbackInput);
+});
 function switchAddTab(tab){
   document.getElementById('tab-paste').classList.toggle('active',tab==='paste');
   document.getElementById('tab-login').classList.toggle('active',tab==='login');
   document.getElementById('add-pane-paste').style.display=tab==='paste'?'':'none';
   document.getElementById('add-pane-login').style.display=tab==='login'?'':'none';
-  if(tab!=='login')stopLoginPoll();
+  if(tab!=='login')cancelLoginSession();
 }
 function resetLoginPane(){
-  stopLoginPoll();
-  _loginUrl='';
-  document.getElementById('login-idle').style.display='';
-  document.getElementById('login-active').style.display='none';
-  document.getElementById('login-start-btn').disabled=false;
+  _loginUrl='';_loginFlowId='';_importing=false;
+  const idle=document.getElementById('login-idle'),act=document.getElementById('login-active');
+  if(idle)idle.style.display='none';
+  if(act)act.style.display='none';
+  const ob=document.getElementById('login-oneclick-btn');if(ob)ob.disabled=false;
+  const cb=document.getElementById('login-complete-btn');if(cb)cb.disabled=false;
+  const ta=document.getElementById('login-callback-url');if(ta)ta.value='';
+  const rs=document.getElementById('login-result');if(rs)rs.style.display='none';
+  setLoginStatus('点击上方「一键导入（国际站）」开始，或在下直接粘贴回调',false);
 }
 async function startLogin(){
-  const btn=document.getElementById('login-start-btn');
+  const d=await api('POST','/login/start');
+  _loginFlowId=d.flow_id; _loginUrl=d.authorize_url;
+  const urn=document.getElementById('login-url'); if(urn)urn.value=d.authorize_url;
+  const act=document.getElementById('login-active'); if(act)act.style.display='';
+  return d;
+}
+async function oneClickImport(){
+  const btn=document.getElementById('login-oneclick-btn');
+  const acct=document.getElementById('login-account').value.trim();
   btn.disabled=true;
+  setLoginStatus('正在生成国际站授权链接…',false);
   try{
-    const d=await api('POST','/login/start');
-    _loginUrl=d.authorize_url;
-    document.getElementById('login-url').value=_loginUrl;
-    document.getElementById('login-idle').style.display='none';
-    document.getElementById('login-active').style.display='';
-    setLoginStatus('等待授权中…',false);
-    try{window.open(_loginUrl,'_blank','noopener');}catch{}
-    pollLogin(d.flow_id);
+    await startLogin();
+    openLoginUrl();
+    setLoginStatus(`授权链接已在新窗口打开${acct?'（备注：'+esc(acct)+'）':''}。请在国际站登录/切换账号并授权，然后把地址栏完整网址粘贴到下方。`,false);
   }catch(e){
-    showToast('发起登录失败: '+e.message,'error');
+    setLoginStatus('发起登录失败: '+e.message,true);
     btn.disabled=false;
   }
 }
-function pollLogin(flowId){
-  let n=0;
-  _loginTimer=setInterval(async()=>{
-    if(++n>120){stopLoginPoll();setLoginStatus('登录超时，请重试',true);return;}
-    try{
-      const d=await api('GET','/login/poll/'+flowId);
-      if(d.status==='ready'){
-        stopLoginPoll();
-        showToast('登录成功，已导入账号池','success');
-        closeModal('modal-add');
-        load();
-      }else if(d.status==='failed'){
-        stopLoginPoll();
-        setLoginStatus(d.message||'授权失败或被拒绝',true);
-      }
-    }catch(e){/* 单次失败继续轮询 */}
-  },2500);
+async function completeLogin(auto){
+  const callbackUrl=document.getElementById('login-callback-url').value.trim();
+  if(!callbackUrl)return showToast('请粘贴认证完成后的完整回调网址','error');
+  const btn=document.getElementById('login-complete-btn');
+  if(!auto)btn.disabled=true;
+  setLoginStatus('正在校验回调并导入账号…',false);
+  try{
+    const path=_loginFlowId?'/login/complete/'+_loginFlowId:'/login/import-callback';
+    const resp=await api('POST',path,{callback_url:callbackUrl});
+    _loginFlowId=''; _loginUrl='';
+    _showImportResult(resp);
+    showToast('导入成功，已录入账号池','success');
+    setTimeout(()=>{ resetLoginPane(); load(); }, 1400);
+  }catch(e){
+    if(btn)btn.disabled=false;
+    setLoginStatus(e.message||'回调验证失败，请检查网址后重试',true);
+  }
+}
+function _showImportResult(resp){
+  const rs=document.getElementById('login-result');
+  if(!rs)return;
+  const acc=(resp&&resp.account)||{};
+  const body=document.getElementById('login-result-body');
+  const name=acc.name||'(未获取到名称)';
+  const id=acc.id||'';
+  // 只显示账号名/邮箱与 token 已录入情况，绝不回显 token 本身
+  const email=(acc.oauth&&acc.oauth.user&&(acc.oauth.user.email||acc.oauth.user.username))||acc.name||'';
+  body.innerHTML=`账号：<b>${esc(email||name)}</b><br>provider：<code>zai</code>（国际站 ZCode）<br>token：已录入（不在此显示）`;
+  rs.style.display='';
+}
+function _onCallbackInput(ev){
+  const v=document.getElementById('login-callback-url').value.trim();
+  // 一旦粘入完整官方回调（桥或深链），自动触发导入，避免二次点击
+  if(/^(https:\/\/zcode\.z\.ai\/app\/oauth\/login|zcode:\/\/oauth\/callback)/.test(v) && v.includes('state=') && !_importing){
+    completeLogin(true);
+  }
 }
 function setLoginStatus(text,isErr){
   const el=document.getElementById('login-status');
+  if(!el)return;
   el.textContent=text;
   el.classList.toggle('live-dot',!isErr);
   el.style.color=isErr?'var(--error)':'';
 }
-function stopLoginPoll(){if(_loginTimer){clearInterval(_loginTimer);_loginTimer=null;}}
-function cancelLogin(){stopLoginPoll();closeModal('modal-add');}
+async function cancelLoginSession(silent=false){
+  const flowId=_loginFlowId;
+  _loginFlowId='';
+  if(flowId)try{await api('DELETE','/login/'+flowId);}catch(e){if(!silent)showToast('取消授权失败: '+e.message,'error');}
+}
+async function cancelLogin(){await cancelLoginSession();closeModal('modal-add');}
 function copyLoginUrl(){navigator.clipboard.writeText(_loginUrl).then(()=>showToast('已复制','success')).catch(()=>showToast('复制失败','error'));}
 function openLoginUrl(){if(_loginUrl)window.open(_loginUrl,'_blank','noopener');}
 
@@ -352,7 +447,7 @@ async function doEdit(){
 function doDelete(id){
   const a=allAccounts.find(x=>x.id===id);
   openConfirm('删除账号',`确认删除 <code>${esc(a?a.token_masked:id)}</code>？此操作不可撤销。`,async()=>{
-    try{await api('DELETE','/accounts',[id]);showToast('已删除','success');load();}
+    try{await api('DELETE','/accounts/'+encodeURIComponent(id));showToast('已删除','success');load();}
     catch(e){showToast('删除失败: '+e.message,'error');}
   });
 }
@@ -369,6 +464,77 @@ async function refreshOne(id){
   catch(e){showToast('刷新失败: '+e.message,'error');}
   finally{refreshing.delete(id);await load();}
 }
+async function testOne(id){
+  if(testing.has(id))return;
+  if(testing.size)return showToast('请等待当前账号测试完成，再测试下一个账号','info');
+  const model=document.getElementById('test-model').value;
+  testing.add(id);renderTable();
+  try{
+    const d=await api('POST','/accounts/'+id+'/test',{model});
+    if(d.ok)showToast(`${model} 测试成功`,'success');
+    else showToast(d.message||`${model} 测试失败`,'error');
+  }catch(e){showToast('测试失败: '+e.message,'error');}
+  finally{testing.delete(id);await load();}
+}
+
+/* ── Windows 本地浏览器人机验证 ── */
+async function openBrowserCaptcha(){
+  openModal('modal-captcha');
+  await startBrowserCaptcha();
+}
+async function startBrowserCaptcha(){
+  if(_captchaPoll){clearInterval(_captchaPoll);_captchaPoll=null;}
+  _captchaId='';_captchaUrl='';
+  const trigger=document.getElementById('btn-browser-captcha');
+  const newBtn=document.getElementById('captcha-new-btn');
+  trigger.disabled=true;newBtn.disabled=true;
+  document.getElementById('captcha-url').value='';
+  document.getElementById('captcha-copy-btn').disabled=true;
+  document.getElementById('captcha-open-btn').disabled=true;
+  setCaptchaStatus('正在获取当前验证配置…','pending');
+  try{
+    const d=await api('POST','/captcha/browser/start');
+    _captchaId=d.id;
+    _captchaUrl=new URL(d.path,location.origin).href;
+    document.getElementById('captcha-url').value=_captchaUrl;
+    document.getElementById('captcha-copy-btn').disabled=false;
+    document.getElementById('captcha-open-btn').disabled=false;
+    setCaptchaStatus(`链接已生成，约 ${Math.max(1,Math.ceil(Number(d.expires_in||600)/60))} 分钟内有效。请复制到 Windows 浏览器打开。`,'pending');
+    _captchaPoll=setInterval(pollBrowserCaptcha,1500);
+  }catch(e){
+    setCaptchaStatus('生成失败：'+e.message,'error');
+  }finally{
+    trigger.disabled=false;newBtn.disabled=false;
+  }
+}
+async function pollBrowserCaptcha(){
+  if(!_captchaId)return;
+  try{
+    const d=await api('GET','/captcha/browser/'+encodeURIComponent(_captchaId));
+    if(d.status==='ready'){
+      setCaptchaStatus(`验证完成，结果等待使用；请在 ${Math.max(1,Number(d.result_expires_in)||1)} 秒内立即重试模型。`,'ready');
+    }else if(d.status==='consumed'){
+      setCaptchaStatus('验证结果已被一个模型请求消费。如需再次调用，请重新生成验证。','consumed');
+      clearCaptchaPoll();
+    }else if(d.status==='expired'||d.status==='cancelled'){
+      setCaptchaStatus('验证链接或结果已经失效，请重新生成。','error');
+      clearCaptchaPoll();
+    }else{
+      setCaptchaStatus(`等待你在 Windows 浏览器完成验证（链接剩余 ${Math.max(0,Number(d.expires_in)||0)} 秒）…`,'pending');
+    }
+  }catch(e){setCaptchaStatus('状态查询失败：'+e.message,'error');clearCaptchaPoll();}
+}
+function clearCaptchaPoll(){if(_captchaPoll){clearInterval(_captchaPoll);_captchaPoll=null;}}
+function setCaptchaStatus(text,state){
+  const el=document.getElementById('captcha-session-status');
+  el.textContent=text;el.dataset.state=state||'pending';
+}
+function copyCaptchaUrl(){
+  if(!_captchaUrl)return;
+  navigator.clipboard.writeText(_captchaUrl).then(()=>showToast('验证链接已复制','success')).catch(()=>showToast('复制失败，请手动选择网址','error'));
+}
+function openCaptchaUrl(){if(_captchaUrl)window.open(_captchaUrl,'_blank','noopener');}
+function closeBrowserCaptcha(){clearCaptchaPoll();closeModal('modal-captcha');}
 async function refreshAll(){
   showToast('正在刷新全部额度…','info');
   try{const d=await api('POST','/accounts/refresh',{all:true});showToast(`刷新完成：成功 ${d.summary.ok}，失败 ${d.summary.fail}`,'success');load();}
@@ -402,7 +568,7 @@ function fmtDate(d){if(!d)return'—';const dt=new Date(d*1000);return isNaN(dt)
 function openModal(id){document.getElementById(id).classList.add('open');}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 function openConfirm(title,body,cb){_cb=async()=>{closeModal('modal-confirm');await cb();};document.getElementById('confirm-title').textContent=title;document.getElementById('confirm-body').innerHTML=body;openModal('modal-confirm');}
-document.querySelectorAll('.modal-overlay').forEach(el=>el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('open');if(el.id==='modal-add')stopLoginPoll();}}));
+document.querySelectorAll('.modal-overlay').forEach(el=>el.addEventListener('click',e=>{if(e.target===el){el.classList.remove('open');if(el.id==='modal-add')cancelLoginSession(true);if(el.id==='modal-captcha')clearCaptchaPoll();}}));
 </script>
 </body>
 </html>

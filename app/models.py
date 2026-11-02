@@ -57,6 +57,7 @@ class Account:
     quota: dict = field(default_factory=dict)
     plan: dict = field(default_factory=dict)        # 当前激活方案
     usage: dict = field(default_factory=dict)       # 近期用量原始数据
+    oauth: dict = field(default_factory=dict, repr=False)  # OAuth token 响应与用户资料
 
     use_count: int = 0
     fail_count: int = 0
@@ -180,6 +181,7 @@ class Account:
             "status": self.effective_status(),
             "quota": self.quota,
             "plan": self.plan,
+            "oauth_saved": bool(self.oauth),
             "use_count": self.use_count,
             "fail_count": self.fail_count,
             "last_used_at": self.last_used_at,

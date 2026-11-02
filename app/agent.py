@@ -53,11 +53,25 @@ def build_request(
         "HTTP-Referer": settings.ZCODE_REFERER,
         "x-request-id": str(uuid.uuid4()),
         "x-zcode-trace-id": str(uuid.uuid4()),
-        "x-query-id": f"query_{uuid.uuid4()}",
-        "x-session-id": str(uuid.uuid4()),
+        "X-Platform": settings.ZCODE_PLATFORM_ID,
+        "X-Client-Language": settings.ZCODE_CLIENT_LANGUAGE,
+        "X-Client-Timezone": settings.ZCODE_CLIENT_TIMEZONE,
+        "X-Os-Category": (
+            "macos"
+            if settings.ZCODE_IDENTITY_PLATFORM == "darwin"
+            else "windows"
+            if settings.ZCODE_IDENTITY_PLATFORM == "win32"
+            else "linux"
+        ),
+        "X-Os-Version": settings.ZCODE_IDENTITY_RELEASE,
     }
-    if not is_start_plan:
-        headers["anthropic-version"] = "2023-06-01"
+    if settings.ZCODE_RELEASE_CHANNEL:
+        headers["X-Release-Channel"] = settings.ZCODE_RELEASE_CHANNEL
+    if settings.ZCODE_DEVICE_MID:
+        headers["X-Device-Mid"] = settings.ZCODE_DEVICE_MID
+    headers["anthropic-version"] = "2023-06-01"
+    headers["x-query-id"] = f"query_{uuid.uuid4()}"
+    headers["x-session-id"] = str(uuid.uuid4())
     if verify_param:
         headers["X-Aliyun-Captcha-Verify-Param"] = verify_param
         headers["X-Aliyun-Captcha-Verify-Region"] = verify_region

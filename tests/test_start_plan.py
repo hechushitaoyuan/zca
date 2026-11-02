@@ -33,15 +33,19 @@ class StartPlanRequestTests(unittest.TestCase):
 
         self.assertEqual(url, "https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages")
         self.assertEqual(headers["Authorization"], f"Bearer {account.jwt_token}")
-        self.assertNotIn("anthropic-version", headers)
+        self.assertEqual(headers["anthropic-version"], "2023-06-01")
         self.assertNotEqual(headers["x-request-id"], "client-request-id")
-        self.assertTrue(headers["x-session-id"])
         self.assertTrue(headers["x-zcode-trace-id"])
+        self.assertTrue(headers["x-session-id"])
         self.assertTrue(headers["x-query-id"].startswith("query_"))
         self.assertEqual(headers["X-ZCode-Agent"], "glm")
+        self.assertIn("X-Platform", headers)
+        self.assertIn("X-Client-Language", headers)
+        self.assertIn("X-Client-Timezone", headers)
         self.assertEqual(headers["X-Aliyun-Captcha-Verify-Param"], "test-verify-param")
         self.assertEqual(headers["X-Aliyun-Captcha-Verify-Region"], "sgp")
         self.assertEqual(headers["anthropic-beta"], "prompt-caching-2024-07-31")
+        self.assertEqual(prepared["model"], "GLM-5.2")
         self.assertEqual(prepared["metadata"]["user_id"], "user-42")
 
     def test_preserves_stream_false_and_does_not_mutate_input(self) -> None:
@@ -59,8 +63,13 @@ class StartPlanRequestTests(unittest.TestCase):
         self.assertIs(prepared["stream"], False)
         self.assertEqual(source, original)
         self.assertEqual(prepared["model"], "GLM-5.2")
-        self.assertEqual(prepared["system"][:2], ZCODE_SYSTEM_BLOCKS)
-        self.assertEqual(prepared["system"][2]["text"], "custom rules")
+        self.assertEqual(prepared["system"][: len(ZCODE_SYSTEM_BLOCKS)], ZCODE_SYSTEM_BLOCKS)
+        dynamic_index = len(ZCODE_SYSTEM_BLOCKS)
+        self.assertEqual(
+            prepared["system"][dynamic_index]["text"],
+            "- You are powered by the model named GLM-5.2.",
+        )
+        self.assertEqual(prepared["system"][dynamic_index + 1]["text"], "custom rules")
         self.assertEqual(prepared["metadata"], {"trace": "keep", "user_id": "u-test"})
         self.assertEqual(
             prepared["messages"][0]["content"][0]["cache_control"],

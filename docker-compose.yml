@@ -5,6 +5,8 @@ services:
     container_name: zcode2api
     ports:
       - "3000:3000"
+      # 人工验证码桌面仅绑定宿主机回环；通过 SSH 隧道访问。
+      - "127.0.0.1:6080:6080"
     volumes:
       # 账号 / 设置持久化到宿主机（容器内为 /data）
       - ./data:/data
@@ -13,7 +15,7 @@ services:
       ZCODE_ADMIN_KEY: "zcode"
       # 后台自动刷新各账号额度的间隔（秒），0 关闭
       ZCODE_QUOTA_REFRESH_INTERVAL: "60"
-      # 单次无痕验证求解超时（秒）/ 失败重试次数
-      ZCODE_CAPTCHA_TIMEOUT: "40"
+      # 含交互式验证等待时间（秒）/ 失败重试次数
+      ZCODE_CAPTCHA_TIMEOUT: "150"
       ZCODE_CAPTCHA_RETRIES: "4"
     restart: unless-stopped

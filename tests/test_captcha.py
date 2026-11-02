@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from app import captcha
 from app.captcha import (
+    BrowserChallengeError,
     CaptchaManager,
+    InteractiveCaptchaRequired,
     SolverError,
     SolverExitError,
     SolverOutputError,
@@ -72,24 +74,65 @@ def make_manager(recorder, *, scene="11xygtvd", region="sgp", prefix="no8xfe") -
 
 
 class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
-    async def test_ttl_cache_starts_subprocess_once(self) -> None:
+    async def test_windows_browser_result_is_memory_only_and_consumed_once(self) -> None:
+        recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
+        mgr = make_manager(recorder, scene="local-scene", region="hzn", prefix="local-prefix")
+        challenge = await mgr.create_browser_challenge()
+
+        public = mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+        self.assertEqual(public["status"], "ready")
+        self.assertNotIn(VALID_PARAM, str(public))
+        self.assertNotIn("verify_param", public)
+
+        first = await mgr.get_verify_param()
+        self.assertEqual(first, (VALID_PARAM, "hzn"))
+        self.assertEqual(recorder.calls, [], "本地结果可用时不应启动 VPS Chromium")
+        self.assertEqual(mgr.get_browser_challenge(challenge.id).status, "consumed")
+
+        second = await mgr.get_verify_param()
+        self.assertEqual(second, (VALID_PARAM, "hzn"))
+        self.assertEqual(len(recorder.calls), 1, "结果只能消费一次，第二次应重新求解")
+
+    async def test_windows_browser_challenge_rejects_bad_or_repeated_result(self) -> None:
+        recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
+        mgr = make_manager(recorder)
+        challenge = await mgr.create_browser_challenge()
+        with self.assertRaises(BrowserChallengeError):
+            mgr.complete_browser_challenge(challenge.id, "short")
+        mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+        with self.assertRaises(BrowserChallengeError):
+            mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+
+    async def test_windows_browser_result_expires_without_being_consumed(self) -> None:
+        recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
+        mgr = make_manager(recorder)
+        challenge = await mgr.create_browser_challenge()
+        mgr.complete_browser_challenge(challenge.id, VALID_PARAM)
+        challenge.result_expires_at = 0
+
+        self.assertEqual(mgr.get_browser_challenge(challenge.id).status, "expired")
+        result = await mgr.get_verify_param()
+        self.assertEqual(result, (VALID_PARAM, "sgp"))
+        self.assertEqual(len(recorder.calls), 1)
+
+    async def test_each_request_gets_a_fresh_verify_param(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)
         first = await mgr.get_verify_param()
         second = await mgr.get_verify_param()
         self.assertEqual(first, (VALID_PARAM, "sgp"))
         self.assertEqual(second, (VALID_PARAM, "sgp"))
-        self.assertEqual(len(recorder.calls), 1)
+        self.assertEqual(len(recorder.calls), 2)
 
-    async def test_single_flight_concurrent_calls_start_once(self) -> None:
+    async def test_concurrent_calls_each_solve_a_unique_consumable_param(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)
         results = await asyncio.gather(*(mgr.get_verify_param() for _ in range(5)))
-        self.assertEqual(len(recorder.calls), 1)
+        self.assertEqual(len(recorder.calls), 5)
         for res in results:
             self.assertEqual(res, (VALID_PARAM, "sgp"))
 
-    async def test_invalidate_forces_resolve(self) -> None:
+    async def test_invalidate_does_not_reintroduce_reuse(self) -> None:
         recorder = SpawnRecorder(lambda: FakeProc(good_stdout(), returncode=0))
         mgr = make_manager(recorder)
         await mgr.get_verify_param()
@@ -133,6 +176,16 @@ class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
                 await mgr.get_verify_param()
         # 退出码可见，但不应回显完整 stderr 之外的敏感参数
         self.assertIn("code=5", str(ctx.exception))
+
+    async def test_interactive_exit_is_not_retried_or_wrapped(self) -> None:
+        recorder = SpawnRecorder(
+            lambda: FakeProc(stdout=b"", stderr=b"interactive", returncode=6)
+        )
+        mgr = make_manager(recorder)
+        with patch.object(captcha.settings, "CAPTCHA_SOLVE_RETRIES", 4):
+            with self.assertRaises(InteractiveCaptchaRequired):
+                await mgr.get_verify_param()
+        self.assertEqual(len(recorder.calls), 1)
 
     async def test_missing_marker_fails(self) -> None:
         recorder = SpawnRecorder(
@@ -178,7 +231,6 @@ class CaptchaSolverTests(unittest.IsolatedAsyncioTestCase):
         proc = recorder.procs[0]
         self.assertTrue(proc.killed, "取消后必须 kill 子进程")
         self.assertTrue(proc.waited, "kill 后必须 wait 回收，避免遗留进程")
-        self.assertIsNone(mgr._cached, "取消不得产生缓存值")
 
     # ── P2：直接测 _run_solver 的具体异常子类 ─────────────────────────────────
     async def test_run_solver_timeout_subclass(self) -> None:
